@@ -12,7 +12,7 @@
   "cfGeoRestrictList": [],
   "bedrock": {
     "enabled": true,
-    "region": "eu-central-1",
+    "region": "us-east-1",
     "guardrails": {
       "enabled": false,
       "identifier": "",

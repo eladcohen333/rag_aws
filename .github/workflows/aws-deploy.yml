@@ -1,0 +1,83 @@
+name: Deploy AWS RAG Chatbot
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+env:
+  AWS_DEFAULT_REGION: eu-central-1
+  AWS_BEDROCK_REGION: us-east-1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Configure AWS credentials for main deployment
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::767398013018:role/GitHubActions-RAG-Deploy
+          role-session-name: GitHubActions-RAG-Deploy
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+          
+      - name: Install dependencies
+        run: |
+          npm ci
+          pip install -r pytest_requirements.txt || echo "No pytest_requirements.txt found"
+          
+      - name: Build project
+        run: |
+          echo "Building TypeScript files..."
+          npx tsc
+        
+      - name: CDK Bootstrap (if needed)
+        run: |
+          npx cdk bootstrap aws://767398013018/${{ env.AWS_DEFAULT_REGION }}
+          
+      - name: Configure AWS credentials for Bedrock region
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::767398013018:role/GitHubActions-RAG-Deploy
+          role-session-name: GitHubActions-RAG-Deploy-Bedrock
+          aws-region: ${{ env.AWS_BEDROCK_REGION }}
+          
+      - name: CDK Bootstrap Bedrock region (if needed)
+        run: |
+          npx cdk bootstrap aws://767398013018/${{ env.AWS_BEDROCK_REGION }}
+          
+      - name: Configure AWS credentials back to main region
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::767398013018:role/GitHubActions-RAG-Deploy
+          role-session-name: GitHubActions-RAG-Deploy-Main
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+          
+      - name: Deploy CDK Stack
+        run: |
+          npx cdk deploy --require-approval never --all
+          
+      - name: Output deployment info
+        run: |
+          echo "Deployment completed successfully!"
+          echo "Main region: ${{ env.AWS_DEFAULT_REGION }}"
+          echo "Bedrock region: ${{ env.AWS_BEDROCK_REGION }}"

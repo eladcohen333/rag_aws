@@ -51,8 +51,8 @@ jobs:
           
       - name: Build project
         run: |
-          echo "Building TypeScript files..."
-          npx tsc
+          echo "Running Amplify codegen and building TypeScript files..."
+          npm run build
         
       - name: CDK Bootstrap (if needed)
         run: |

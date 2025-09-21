@@ -76,6 +76,11 @@ jobs:
           role-session-name: GitHubActions-RAG-Deploy-Main
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
           
+      - name: Clean up failed stacks (if any)
+        run: |
+          echo "Checking for failed stacks..."
+          npx cdk destroy RAG-GenAIChatBotStack --force || echo "No existing stack to destroy"
+          
       - name: Deploy CDK Stack
         run: |
           npx cdk deploy --require-approval never --all

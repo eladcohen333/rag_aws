@@ -92,7 +92,7 @@ export class PublicWebsite extends Construct {
       : undefined;
     const responseHeadersPolicy = new cf.ResponseHeadersPolicy(
       this,
-      "ResponseHeadersPolicy",
+      `ResponseHeadersPolicy-${cdk.Stack.of(this).stackName}`,
       {
         securityHeadersBehavior: {
           contentSecurityPolicy: {

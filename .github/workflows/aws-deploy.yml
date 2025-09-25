@@ -44,6 +44,19 @@ jobs:
           role-session-name: GitHubActions-RAG-Deploy
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
           
+      - name: Free up disk space
+        run: |
+          echo "Freeing up disk space..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/hostedtoolcache
+          sudo apt-get clean
+          docker system prune -af --volumes
+          df -h
+          
       - name: Install dependencies
         run: |
           npm ci
@@ -79,7 +92,9 @@ jobs:
       - name: Deploy CDK Stack (Update existing)
         run: |
           echo "Deploying updates to existing stack..."
-          npx cdk deploy --require-approval never --all
+          npx cdk deploy --require-approval never --all --concurrency 1 --max-concurrent-resources 10
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
           
       - name: Output deployment info
         run: |

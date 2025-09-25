@@ -94,6 +94,7 @@ def handle_run(record):
     documents = data.get("documents", [])
     videos = data.get("videos", [])
     system_prompts = record.get("systemPrompts", {})
+
     if not session_id:
         session_id = str(uuid.uuid4())
 
@@ -123,6 +124,7 @@ def handle_run(record):
 
     logger.debug(response)
 
+    # כאן השינוי: עטיפה בפורמט שה-Frontend יודע לפרש
     send_to_client(
         {
             "type": "text",
@@ -130,7 +132,11 @@ def handle_run(record):
             "timestamp": str(int(round(datetime.now().timestamp()))),
             "userId": user_id,
             "userGroups": user_groups,
-            "data": response,
+            "data": {
+                "sessionId": session_id,
+                "content": response if isinstance(response, str) else str(response),
+                "type": "text"
+            },
         }
     )
 
@@ -159,26 +165,24 @@ def handle_failed_records(records):
         data = detail.get("data", {})
         session_id = data.get("sessionId", "")
 
-        message = "⚠️ *Something went wrong*"
+        message_text = "⚠️ *Something went wrong*"
         if (
             "An error occurred (ValidationException)" in error
             and "The provided image must have dimensions in set [1280x720]" in error
         ):
-            # At this time only one input size is supported by the Nova reel model.
-            message = "⚠️ *The provided image must have dimensions of 1280x720.*"
+            message_text = "⚠️ *The provided image must have dimensions of 1280x720.*"
         elif (
             "An error occurred (ValidationException)" in error
             and "The width of the provided image must be within range [320, 4096]"
             in error
         ):
-            # At this time only this size is supported by the Nova canvas model.
-            message = "⚠️ *The width of the provided image must be within range 320 and 4096 pixels.*"  # noqa
+            message_text = "⚠️ *The width of the provided image must be within range 320 and 4096 pixels.*"
         elif (
             "An error occurred (AccessDeniedException)" in error
             and "You don't have access to the model with the specified model ID"
             in error
         ):
-            message = (
+            message_text = (
                 "*This model is not enabled. "
                 "Please try again later or contact "
                 "an administrator*"
@@ -195,9 +199,7 @@ def handle_failed_records(records):
                 "timestamp": str(int(round(datetime.now().timestamp()))),
                 "data": {
                     "sessionId": session_id,
-                    # Log a vague message because the error can contain
-                    # internal information
-                    "content": message,
+                    "content": message_text,
                     "type": "text",
                 },
             }
@@ -221,7 +223,7 @@ def handler(event, context: LambdaContext):
 
     for message in processed_messages:
         logger.info(
-            "Request compelte with status " + message[0],
+            "Request complete with status " + message[0],
             status=message[0],
             cause=message[1],
         )

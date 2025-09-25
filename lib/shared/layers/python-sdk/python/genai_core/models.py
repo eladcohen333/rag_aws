@@ -183,20 +183,6 @@ def list_bedrock_models():
                 create_bedrock_model_profile(bedrock_model, bedrock_model["modelId"])
             )
 
-        # Add Claude 3.7 Sonnet manually if not found in the API response
-        claude_3_7_found = any(model.get("name") == "anthropic.claude-3-7-sonnet-20250219-v1:0" for model in models)
-        if not claude_3_7_found:
-            logger.info("Adding Claude 3.7 Sonnet manually as it was not found in Bedrock API")
-            models.append({
-                "provider": Provider.BEDROCK.value,
-                "name": "anthropic.claude-3-7-sonnet-20250219-v1:0",
-                "streaming": True,
-                "inputModalities": [Modality.TEXT.value, "DOCUMENT"],
-                "outputModalities": [Modality.TEXT.value],
-                "interface": ModelInterface.LANGCHAIN.value,
-                "ragSupported": True,
-                "bedrockGuardrails": True,
-            })
 
         return models
     except Exception as e:

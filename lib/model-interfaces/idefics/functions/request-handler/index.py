@@ -24,6 +24,13 @@ logger = Logger()
 sequence_number = 0
 
 
+def get_clean_model_id(model_id):
+    """Remove the 'us..' prefix from model_id for storage in DynamoDB"""
+    if model_id and model_id.startswith('us.'):
+        return model_id[3:]  # Remove first 3 characters ('us.')
+    return model_id
+
+
 def on_llm_new_token(user_id, session_id, self, *args, **kwargs):
     chunk = args[0]
     if chunk is None or len(chunk) == 0:
@@ -100,7 +107,7 @@ def handle_run(record):
     # Add user files and mesage to chat history
     user_message_metadata = {
         "provider": provider,
-        "modelId": model_id,
+        "modelId": get_clean_model_id(model_id),
         "modelKwargs": model_kwargs,
         "mode": mode,
         "sessionId": session_id,
@@ -114,7 +121,7 @@ def handle_run(record):
     # Add AI files and message to chat history
     ai_response_metadata = {
         "provider": provider,
-        "modelId": model_id,
+        "modelId": get_clean_model_id(model_id),
         "modelKwargs": model_kwargs,
         "mode": mode,
         "sessionId": session_id,

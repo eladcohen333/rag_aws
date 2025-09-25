@@ -97,6 +97,15 @@ class ModelAdapter:
         self.chat_history = self.get_chat_history()
         self.llm = self.get_llm(model_kwargs)
 
+    def get_clean_model_id(self):
+        """Remove the 'us..' prefix from model_id for storage in DynamoDB"""
+        if hasattr(self, 'model_id') and self.model_id:
+            # Remove 'us.' prefix if it exists
+            if self.model_id.startswith('us.'):
+                return self.model_id[3:]  # Remove first 3 characters ('us.')
+            return self.model_id
+        return None
+
     def __bind_callbacks(self):
         callback_methods = [method for method in dir(self) if method.startswith("on_")]
         valid_callback_names = [
@@ -313,7 +322,7 @@ class ModelAdapter:
             clean_prompts.append(re.sub(r"\[{.*}\]*", "*FILE*", prompt))
 
         metadata = {
-            "modelId": self.model_id,
+            "modelId": self.get_clean_model_id(),
             "modelKwargs": self.model_kwargs,
             "mode": self._mode,
             "sessionId": self.session_id,
@@ -403,7 +412,7 @@ class ModelAdapter:
             ]
 
             metadata = {
-                "modelId": self.model_id,
+                "modelId": self.get_clean_model_id(),
                 "modelKwargs": self.model_kwargs,
                 "mode": self._mode,
                 "sessionId": self.session_id,
@@ -441,7 +450,7 @@ class ModelAdapter:
         )
 
         metadata = {
-            "modelId": self.model_id,
+            "modelId": self.get_clean_model_id(),
             "modelKwargs": self.model_kwargs,
             "mode": self._mode,
             "sessionId": self.session_id,
@@ -489,7 +498,7 @@ class ModelAdapter:
 
         # Add user files and mesage to chat history
         user_message_metadata = {
-            "modelId": self.model_id,
+            "modelId": self.get_clean_model_id(),
             "modelKwargs": self.model_kwargs,
             "mode": self._mode,
             "sessionId": self.session_id,
@@ -506,7 +515,7 @@ class ModelAdapter:
         ai_videos = ai_response.get("videos", [])
 
         ai_response_metadata = {
-            "modelId": self.model_id,
+            "modelId": self.get_clean_model_id(),
             "modelKwargs": self.model_kwargs,
             "mode": self._mode,
             "sessionId": self.session_id,

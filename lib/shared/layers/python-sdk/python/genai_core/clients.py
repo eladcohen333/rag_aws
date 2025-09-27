@@ -1,3 +1,4 @@
+import os
 import boto3
 import openai
 import genai_core.types
@@ -34,7 +35,8 @@ def get_bedrock_client(service_name="bedrock-runtime"):
         return None
 
     bedrock_config_data = {"service_name": service_name}
-    region_name = bedrock_config.get("region")
+    # Priority: Environment variable > config region > default AWS region
+    region_name = os.environ.get("BEDROCK_REGION") or bedrock_config.get("region")
     role_arn = bedrock_config.get("roleArn")
 
     if region_name:
@@ -57,7 +59,8 @@ def get_bedrock_client(service_name="bedrock-runtime"):
 def get_comprehend_client():
     config = genai_core.parameters.get_config()
     bedrock_config = config.get("bedrock", {})
-    region_name = bedrock_config.get("region")
+    # Priority: Environment variable > config region > default AWS region
+    region_name = os.environ.get("BEDROCK_REGION") or bedrock_config.get("region")
     if region_name:
         client = boto3.client("comprehend", region_name=region_name)
     return client

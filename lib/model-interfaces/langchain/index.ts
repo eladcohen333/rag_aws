@@ -67,6 +67,7 @@ export class LangChainInterface extends Construct {
         MESSAGES_TOPIC_ARN: props.messagesTopic.topicArn,
         APPSYNC_ENDPOINT: props.graphqlApi.graphqlUrl,
         DIRECT_SEND: props.config.directSend ? "true" : "false",
+        BEDROCK_REGION: props.config.bedrock?.region || props.config.deployment?.bedrockRegion || cdk.Aws.REGION,
         WORKSPACES_TABLE_NAME:
           props.ragEngines?.workspacesTable.tableName ?? "",
         WORKSPACES_BY_OBJECT_TYPE_INDEX_NAME:

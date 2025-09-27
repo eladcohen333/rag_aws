@@ -10,10 +10,14 @@ const app = new cdk.App();
 
 const config = getConfig();
 console.log("loaded config: ", JSON.stringify(config, null, 2));
+
+// Use Frankfurt as primary region if specified in config, otherwise fall back to CDK_DEFAULT_REGION
+const primaryRegion = config.deployment?.primaryRegion || process.env.CDK_DEFAULT_REGION;
+
 new AwsGenAILLMChatbotStack(app, `${config.prefix}GenAIChatBotStack`, {
   config,
   env: {
-    region: process.env.CDK_DEFAULT_REGION,
+    region: primaryRegion,
     account: process.env.CDK_DEFAULT_ACCOUNT,
   },
 });

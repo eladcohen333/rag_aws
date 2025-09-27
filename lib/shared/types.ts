@@ -88,6 +88,10 @@ export interface SystemConfig {
   createCMKs?: boolean;
   retainOnDelete?: boolean;
   ddbDeletionProtection?: boolean;
+  deployment?: {
+    primaryRegion?: SupportedRegion;
+    bedrockRegion?: SupportedRegion;
+  };
   vpc?: {
     vpcId?: string;
     createVpcEndpoints?: boolean;

@@ -19,6 +19,10 @@
       "version": "DRAFT"
     }
   },
+  "deployment": {
+    "primaryRegion": "eu-central-1",
+    "bedrockRegion": "us-east-1"
+  },
   "llms": {
     "enableSagemakerModels": false,
     "sagemaker": [],

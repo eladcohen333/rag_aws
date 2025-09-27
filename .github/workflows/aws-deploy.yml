@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_DEFAULT_REGION: us-east-1
+  AWS_DEFAULT_REGION: eu-central-1
   AWS_BEDROCK_REGION: us-east-1
 
 permissions:
@@ -41,7 +41,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::767398013018:role/GitHubActions-RAG-Deploy
-          role-session-name: GitHubActions-RAG-Deploy
+          role-session-name: GitHubActions-RAG-Deploy-Frankfurt
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
           
       - name: Free up disk space
@@ -67,7 +67,7 @@ jobs:
           echo "Running Amplify codegen and building TypeScript files..."
           npm run build
         
-      - name: CDK Bootstrap (if needed)
+      - name: CDK Bootstrap Frankfurt region
         run: |
           npx cdk bootstrap aws://767398013018/${{ env.AWS_DEFAULT_REGION }}
           
@@ -88,10 +88,24 @@ jobs:
           role-to-assume: arn:aws:iam::767398013018:role/GitHubActions-RAG-Deploy
           role-session-name: GitHubActions-RAG-Deploy-Main
           aws-region: ${{ env.AWS_DEFAULT_REGION }}
-          
-      - name: Deploy CDK Stack (Update existing)
+
+      - name: Check and destroy old stack in US East (if exists)
         run: |
-          echo "Deploying updates to existing stack..."
+          echo "Checking for existing stack in us-east-1..."
+          if aws cloudformation describe-stacks --region us-east-1 --stack-name RAG-GenAIChatBotStack 2>/dev/null; then
+            echo "Found existing stack in us-east-1. Destroying it first..."
+            export CDK_DEFAULT_REGION=us-east-1
+            npx cdk destroy RAG-GenAIChatBotStack --force --region us-east-1
+            echo "Old stack destroyed successfully"
+          else
+            echo "No existing stack found in us-east-1, proceeding with deployment"
+          fi
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
+          
+      - name: Deploy CDK Stack in Frankfurt
+        run: |
+          echo "Deploying new stack in Frankfurt (eu-central-1)..."
           npx cdk deploy --require-approval never --all --concurrency 1 --max-concurrent-resources 10
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"

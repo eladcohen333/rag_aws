@@ -449,6 +449,11 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
       ({ name, provider } = OptionsHelper.parseValue(
         state.selectedModel?.value
       ));
+      
+      // DEBUG: Add console.log to see the parsed values
+      console.log("Parsed model name:", name);
+      console.log("Parsed provider:", provider);
+      console.log("Original value:", state.selectedModel?.value);
     }
 
     const value = state.value.trim();
@@ -489,6 +494,9 @@ export default function ChatInputPanel(props: ChatInputPanelProps) {
             },
           },
         };
+
+    // DEBUG: Log the full request to see what's being sent
+    console.log("ChatBot request:", JSON.stringify(request, null, 2));
 
     setState((state) => ({
       ...state,
@@ -1086,7 +1094,17 @@ function getSelectedModelOption(
     const sageMakerModels = models.filter((m) => m.provider === "sagemaker");
     const openAIModels = models.filter((m) => m.provider === "openai");
 
-    candidate = bedrockModels.find((m) => m.name === "anthropic.claude-v2");
+    // Updated to prioritize Claude 4 and newer models
+    candidate = bedrockModels.find((m) => m.name === "anthropic.claude-sonnet-4-20250514-v1:0");
+    if (!candidate) {
+      candidate = bedrockModels.find((m) => m.name === "anthropic.claude-3-5-sonnet-20240620-v1:0");
+    }
+    if (!candidate) {
+      candidate = bedrockModels.find((m) => m.name === "anthropic.claude-3-haiku-20240307-v1:0");
+    }
+    if (!candidate) {
+      candidate = bedrockModels.find((m) => m.name === "anthropic.claude-v2");
+    }
     if (!candidate) {
       candidate = bedrockModels.find((m) => m.name === "anthropic.claude-v1");
     }

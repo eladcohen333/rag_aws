@@ -12,7 +12,7 @@
   "cfGeoRestrictList": [],
   "bedrock": {
     "enabled": true,
-    "region": "us-east-1",
+    "region": "eu-central-1",
     "guardrails": {
       "enabled": false,
       "identifier": "",
@@ -21,7 +21,7 @@
   },
   "deployment": {
     "primaryRegion": "eu-central-1",
-    "bedrockRegion": "us-east-1"
+    "bedrockRegion": "eu-central-1"
   },
   "llms": {
     "enableSagemakerModels": false,

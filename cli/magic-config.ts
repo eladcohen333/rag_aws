@@ -429,7 +429,7 @@ async function processCreateOptions(options: any): Promise<void> {
       name: "bedrockRegion",
       message: "Region where Bedrock is available",
       choices: Object.values(SupportedBedrockRegion),
-      initial: options.bedrockRegion ?? "us-east-1",
+      initial: options.bedrockRegion ?? "eu-central-1",
       skip() {
         return !(this as any).state.answers.bedrockEnable;
       },

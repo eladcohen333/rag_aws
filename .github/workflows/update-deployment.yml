@@ -8,11 +8,13 @@ on:
       - 'lib/**/*.tsx'
       - 'lib/**/*.ts'
       - 'lib/**/*.js'
+      - 'bin/config.json'
+      - 'bin/config.ts'
   workflow_dispatch:
 
 env:
   AWS_DEFAULT_REGION: eu-central-1
-  AWS_BEDROCK_REGION: us-east-1
+  AWS_BEDROCK_REGION: eu-central-1
 
 permissions:
   id-token: write

@@ -51,7 +51,7 @@ This guide explains how to deploy the AWS RAG Solution with infrastructure in Fr
 {
   "bedrock": {
     "enabled": true,
-    "region": "us-east-1",
+    "region": "eu-central-1",
     "guardrails": {
       "enabled": false,
       "identifier": "",
@@ -60,7 +60,7 @@ This guide explains how to deploy the AWS RAG Solution with infrastructure in Fr
   },
   "deployment": {
     "primaryRegion": "eu-central-1",
-    "bedrockRegion": "us-east-1"
+    "bedrockRegion": "eu-central-1"
   }
 }
 ```
@@ -263,8 +263,8 @@ If you need to revert to single-region deployment:
    ```json
    {
      "deployment": {
-       "primaryRegion": "us-east-1",
-       "bedrockRegion": "us-east-1"
+       "primaryRegion": "eu-central-1",
+       "bedrockRegion": "eu-central-1"
      }
    }
    ```

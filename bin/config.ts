@@ -27,7 +27,7 @@ export function getConfig(): SystemConfig {
     cfGeoRestrictList: [],
     bedrock: {
       enabled: true,
-      region: SupportedRegion.US_EAST_1,
+      region: SupportedRegion.EU_CENTRAL_1,
     },
     llms: {
       // sagemaker: [SupportedSageMakerModels.FalconLite]

@@ -207,6 +207,7 @@ def _create_workspace_aurora(request: CreateWorkspaceAuroraRequest, config: dict
     if request.chunkingStrategy not in [
         genai_core.types.ChunkingStrategy.RECURSIVE.value,
         genai_core.types.ChunkingStrategy.FILE_LEVEL.value,
+        genai_core.types.ChunkingStrategy.SEMANTIC.value,
     ]:
         raise genai_core.types.CommonError("Invalid chunking strategy")
 
@@ -270,6 +271,7 @@ def _create_workspace_open_search(
     if request.chunkingStrategy not in [
         genai_core.types.ChunkingStrategy.RECURSIVE.value,
         genai_core.types.ChunkingStrategy.FILE_LEVEL.value,
+        genai_core.types.ChunkingStrategy.SEMANTIC.value,
     ]:
         raise genai_core.types.CommonError("Invalid chunking strategy")
 

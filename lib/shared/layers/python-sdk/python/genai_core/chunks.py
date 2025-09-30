@@ -7,12 +7,41 @@ import genai_core.aurora.chunks
 import genai_core.opensearch.chunks
 from genai_core.types import CommonError, Task
 from typing import List, Optional
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter, SemanticChunker
+    from langchain_core.embeddings import Embeddings
+except ImportError:  # pragma: no cover
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    SemanticChunker = None
+    Embeddings = None
 from .types import CommonError as NewCommonError
 
 PROCESSING_BUCKET_NAME = os.environ.get("PROCESSING_BUCKET_NAME", "")
 FILE_SIZE_THRESHOLD = 100 * 1024  # 100KB threshold for file-level chunking
 s3 = boto3.resource("s3")
+
+
+if SemanticChunker and Embeddings:
+
+    class _SemanticChunkerEmbeddingsAdapter(Embeddings):
+        """Adapter that exposes project embeddings via the LangChain Embeddings interface."""
+
+        def __init__(self, model):
+            self._model = model
+
+        def embed_documents(self, texts: List[str]) -> List[List[float]]:
+            if not texts:
+                return []
+            return genai_core.embeddings.generate_embeddings(
+                self._model, list(texts), Task.STORE.value
+            )
+
+        def embed_query(self, text: str) -> List[float]:
+            embeddings = genai_core.embeddings.generate_embeddings(
+                self._model, [text], Task.RETRIEVE.value
+            )
+            return embeddings[0] if embeddings else []
 
 
 def add_chunks(
@@ -102,6 +131,25 @@ def split_content(workspace: dict, content: str, file_size: Optional[int] = None
             # Fall back to recursive chunking for large files
             print(f"File size {file_size} exceeds threshold {FILE_SIZE_THRESHOLD}. Falling back to recursive chunking.")
             chunking_strategy = "recursive" # Set strategy for the next block
+
+    if chunking_strategy == "semantic":
+        if not SemanticChunker or not Embeddings:
+            print("Semantic chunker dependencies unavailable, falling back to recursive strategy.")
+        else:
+            print("Using semantic chunking")
+            embeddings_model = genai_core.embeddings.get_embeddings_model(
+                workspace.get("embeddings_model_provider"),
+                workspace.get("embeddings_model_name"),
+            )
+            if embeddings_model is None:
+                raise NewCommonError("Embeddings model not found for semantic chunking")
+
+            splitter = SemanticChunker(
+                _SemanticChunkerEmbeddingsAdapter(embeddings_model)
+            )
+            chunks = splitter.split_text(content)
+            print(f"Split into {len(chunks)} semantic chunks.")
+            return chunks or [content]
 
     # Handle recursive chunking (either initially chosen or as fallback)
     if chunking_strategy == "recursive":

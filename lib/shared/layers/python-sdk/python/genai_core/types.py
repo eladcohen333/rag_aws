@@ -102,3 +102,4 @@ class FileStorageProvider(Enum):
 class ChunkingStrategy(Enum):
     RECURSIVE = "recursive"
     FILE_LEVEL = "file_level"
+    SEMANTIC = "semantic"

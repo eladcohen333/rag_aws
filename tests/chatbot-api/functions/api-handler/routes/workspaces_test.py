@@ -232,6 +232,43 @@ def test_create_kendra_workspace_invalid_input(mocker):
         create_kendra_workspace(input)
 
 
+
+
+
+def test_create_aurora_workspace_semantic_chunking(mocker):
+    mocker.patch("genai_core.parameters.get_config", return_value=config)
+    mock = mocker.patch(
+        "genai_core.workspaces.create_workspace_aurora", return_value=workspace
+    )
+    mocker.patch("genai_core.auth.get_user_roles", return_value=["user", "admin"])
+
+    semantic_input = create_base_input.copy()
+    semantic_input["chunkingStrategy"] = "semantic"
+
+    response = create_aurora_workspace(semantic_input)
+    assert response.get("id") == workspace.get("workspace_id")
+    assert mock.call_count == 1
+    assert mock.call_args.kwargs.get("chunking_strategy") == "semantic"
+
+
+
+def test_create_open_search_workspace_semantic_chunking(mocker):
+    mocker.patch("genai_core.parameters.get_config", return_value=config)
+    mock = mocker.patch(
+        "genai_core.workspaces.create_workspace_open_search", return_value=workspace
+    )
+    mocker.patch("genai_core.auth.get_user_roles", return_value=["user", "admin"])
+
+    semantic_input = create_base_input.copy()
+    semantic_input["chunkingStrategy"] = "semantic"
+
+    response = create_open_search_workspace(semantic_input)
+    assert response.get("id") == workspace.get("workspace_id")
+    assert mock.call_count == 1
+    assert mock.call_args.kwargs.get("chunking_strategy") == "semantic"
+
+
+
 def verifiy_common_invalid_inputs(method):
     input = create_base_input.copy()
     input["embeddingsModelProvider"] = "unkown"

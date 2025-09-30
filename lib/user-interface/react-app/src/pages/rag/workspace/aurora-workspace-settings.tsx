@@ -94,6 +94,10 @@ export default function AuroraWorkspaceSettings(
             <div>{props.workspace.hybridSearch ? "Yes" : "No"}</div>
           </div>
           <div>
+            <Box variant="awsui-key-label">Chunking strategy</Box>
+            <div>{Labels.chunkingStrategyMap[props.workspace.chunkingStrategy ?? ""] ?? props.workspace.chunkingStrategy ?? "Unknown"}</div>
+          </div>
+          <div>
             <Box variant="awsui-key-label">Chunk size</Box>
             <div>{props.workspace.chunkSize}</div>
           </div>

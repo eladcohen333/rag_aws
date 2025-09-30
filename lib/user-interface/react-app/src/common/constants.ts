@@ -81,6 +81,12 @@ export abstract class Labels {
     l2: "1 divided by 1 + L2 norm",
   };
 
+  static chunkingStrategyMap: Record<string, string> = {
+    recursive: "Recursive",
+    file_level: "File level",
+    semantic: "Semantic (Preview)",
+  };
+
   static sourceTypeMap: Record<string, string> = {
     vector_search: "Vector search",
     keyword_search: "Keyword search",

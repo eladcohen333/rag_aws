@@ -1,18 +1,18 @@
-import { ColumnLayout, FormField, Input, RadioGroup, SpaceBetween } from "@cloudscape-design/components";
+import { Box, ColumnLayout, FormField, Input, RadioGroup, SpaceBetween } from "@cloudscape-design/components";
 
 interface ChunkSelectorProps {
   errors: Record<string, string | string[]>;
   data: { 
     chunkSize: number; 
     chunkOverlap: number;
-    chunkingStrategy: "recursive" | "file_level";
+    chunkingStrategy: "recursive" | "file_level" | "semantic";
   };
   submitting: boolean;
   onChange: (
     data: Partial<{ 
       chunkSize: number; 
       chunkOverlap: number;
-      chunkingStrategy: "recursive" | "file_level";
+      chunkingStrategy: "recursive" | "file_level" | "semantic";
     }>
   ) => void;
 }
@@ -22,7 +22,7 @@ export function ChunkSelectorField(props: ChunkSelectorProps) {
     <FormField
       label="Text Splitter"
       stretch={true}
-      description="Choose how to split your documents into chunks for embedding. File-level chunking treats each file as a single chunk, while recursive splitting creates smaller, overlapping chunks."
+      description="Choose how to split your documents into chunks for embedding. Semantic chunking uses embeddings to find natural boundaries, recursive splitting creates smaller overlapping chunks, and file-level treats each file as a single chunk."
     >
       <SpaceBetween size="l">
         <FormField label="Chunking Strategy" errorText={props.errors.chunkingStrategy}>
@@ -34,15 +34,26 @@ export function ChunkSelectorField(props: ChunkSelectorProps) {
                 description: "Split text into smaller chunks with overlap. Better for precise retrieval.",
               },
               {
+                label: "Semantic (Preview)",
+                value: "semantic",
+                description: "Use embeddings-aware semantic boundaries when splitting content.",
+              },
+              {
                 label: "File Level",
                 value: "file_level",
                 description: "Treat each file as a single chunk. Files over 100KB will automatically use recursive splitting.",
               },
             ]}
             value={props.data.chunkingStrategy}
-            onChange={({ detail }) => props.onChange({ chunkingStrategy: detail.value as "recursive" | "file_level" })}
+            onChange={({ detail }) => props.onChange({ chunkingStrategy: detail.value as "recursive" | "file_level" | "semantic" })}
           />
         </FormField>
+
+        {props.data.chunkingStrategy === "semantic" && (
+          <Box color="text-body-secondary">
+            Semantic chunking automatically determines chunk sizes; the values below are ignored when this option is selected.
+          </Box>
+        )}
 
         {props.data.chunkingStrategy === "recursive" && (
           <ColumnLayout columns={2}>

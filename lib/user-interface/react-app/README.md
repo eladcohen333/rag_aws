@@ -2,7 +2,7 @@
 
 ## Running locally
 
-You can run this vite react app locally following these steps.
+You can run this vite react app locally following these steps.!
 
 ### Deploy infrastructure to AWS
 

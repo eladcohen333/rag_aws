@@ -96,6 +96,45 @@ def preprocess_question(question):
     return question
 
 
+def generate_search_variations(question):
+    """
+    Generate different variations of the question for enhanced search
+    """
+    import re
+    
+    variations = []
+    
+    # Original question
+    variations.append(question)
+    
+    # Remove common question words
+    question_words = ['מה', 'איך', 'מתי', 'איפה', 'למה', 'מי', 'what', 'how', 'when', 'where', 'why', 'who']
+    no_question_words = question
+    for word in question_words:
+        no_question_words = re.sub(r'\b' + word + r'\b', '', no_question_words, flags=re.IGNORECASE)
+    no_question_words = re.sub(r'\s+', ' ', no_question_words).strip()
+    if no_question_words and no_question_words != question:
+        variations.append(no_question_words)
+    
+    # Extract key terms (words longer than 2 characters)
+    key_terms = [word for word in question.split() if len(word) > 2]
+    if len(key_terms) > 1:
+        variations.append(' '.join(key_terms))
+    
+    # Try with only the most important words (longest words)
+    if len(key_terms) > 2:
+        sorted_terms = sorted(key_terms, key=len, reverse=True)
+        variations.append(' '.join(sorted_terms[:3]))
+    
+    # Remove duplicates while preserving order
+    unique_variations = []
+    for var in variations:
+        if var and var not in unique_variations:
+            unique_variations.append(var)
+    
+    return unique_variations
+
+
 def is_not_found_response(content):
     """
     Check if the response indicates that information was not found in the document
@@ -113,14 +152,44 @@ def is_not_found_response(content):
         "לא נמצא מידע",
         "אין תוכן רלוונטי",
         "לא נמצא תוכן",
+        "לא יכול למצוא",
+        "אין מידע זמין",
         "not found in document",
         "no information found",
         "cannot find",
         "no relevant information",
-        "information not available"
+        "information not available",
+        "i don't have information",
+        "no data available",
+        "unable to find"
     ]
     
     return any(indicator in content_lower for indicator in not_found_indicators)
+
+
+def is_meaningful_response(content):
+    """
+    Check if the response contains meaningful information (not just a generic response)
+    """
+    if not content or len(content.strip()) < 10:
+        return False
+    
+    # Check for generic responses that indicate no real information
+    generic_responses = [
+        "אני לא יודע",
+        "לא יכול לענות",
+        "אין לי מידע",
+        "i don't know",
+        "i cannot answer",
+        "i'm not sure",
+        "sorry, i don't have"
+    ]
+    
+    content_lower = content.lower()
+    has_generic = any(generic in content_lower for generic in generic_responses)
+    
+    # If it's not a generic response and has reasonable length, consider it meaningful
+    return not has_generic and len(content.strip()) > 20
 
 
 def handle_run(record):
@@ -141,10 +210,6 @@ def handle_run(record):
     if not session_id:
         session_id = str(uuid.uuid4())
 
-    # Preprocess the question
-    processed_prompt = preprocess_question(original_prompt)
-    logger.info(f"Original prompt: '{original_prompt}' -> Processed prompt: '{processed_prompt}'")
-
     adapter = registry.get_adapter(f"{provider}.{model_id}")
 
     adapter.on_llm_new_token = lambda *args, **kwargs: on_llm_new_token(
@@ -159,17 +224,33 @@ def handle_run(record):
         model_kwargs=data.get("modelKwargs", {}),
     )
 
-    # Try with processed prompt first, then retry with original if needed
-    max_retries = 2
-    retry_count = 0
-    response = None
+    # Enhanced search strategy with multiple attempts
+    best_response = None
+    best_content = ""
+    best_metadata = {}
     
-    while retry_count < max_retries:
+    # Generate search variations for comprehensive search
+    search_variations = []
+    
+    # Add preprocessed question
+    processed_prompt = preprocess_question(original_prompt)
+    search_variations.append(("processed", processed_prompt))
+    
+    # Add original question
+    search_variations.append(("original", original_prompt))
+    
+    # Add question variations only if we have a workspace (RAG enabled)
+    if workspace_id:
+        variations = generate_search_variations(original_prompt)
+        for i, variation in enumerate(variations[2:], 1):  # Skip first two (already added)
+            search_variations.append((f"variation_{i}", variation))
+    
+    logger.info(f"Starting enhanced search with {len(search_variations)} variations")
+    
+    # Try each search variation until we get a meaningful response
+    for attempt_num, (variation_type, prompt_to_use) in enumerate(search_variations):
         try:
-            # Use processed prompt on first try, original on retry
-            prompt_to_use = processed_prompt if retry_count == 0 else original_prompt
-            
-            logger.info(f"Attempt {retry_count + 1}: Using prompt: '{prompt_to_use}'")
+            logger.info(f"Attempt {attempt_num + 1} ({variation_type}): '{prompt_to_use}'")
             
             response = model.run(
                 prompt=prompt_to_use,
@@ -181,7 +262,7 @@ def handle_run(record):
                 system_prompts=system_prompts,
             )
 
-            logger.debug(response)
+            logger.debug(f"Response from attempt {attempt_num + 1}: {response}")
 
             # Extract content and metadata from response
             if isinstance(response, dict):
@@ -191,22 +272,42 @@ def handle_run(record):
                 content = str(response)
                 metadata = {}
             
-            # Check if we got a "not found" response and should retry
-            if workspace_id and is_not_found_response(content) and retry_count < max_retries - 1:
-                logger.info(f"Got 'not found' response on attempt {retry_count + 1}, retrying...")
-                retry_count += 1
-                continue
+            # Always keep the first response as fallback
+            if best_response is None:
+                best_response = response
+                best_content = content
+                best_metadata = metadata
+            
+            # Check if this is a meaningful response
+            if workspace_id:
+                # For RAG queries, check if we found information in documents
+                if not is_not_found_response(content) and is_meaningful_response(content):
+                    logger.info(f"Found meaningful response on attempt {attempt_num + 1}")
+                    best_response = response
+                    best_content = content
+                    best_metadata = metadata
+                    break
+                else:
+                    logger.info(f"Attempt {attempt_num + 1} returned no meaningful results, trying next variation...")
             else:
-                # Success or max retries reached
-                break
+                # For non-RAG queries, use the first successful response
+                if is_meaningful_response(content):
+                    logger.info(f"Got meaningful response on attempt {attempt_num + 1}")
+                    best_response = response
+                    best_content = content
+                    best_metadata = metadata
+                    break
                 
         except Exception as e:
-            logger.error(f"Error on attempt {retry_count + 1}: {str(e)}")
-            if retry_count < max_retries - 1:
-                retry_count += 1
-                continue
-            else:
-                raise e
+            logger.error(f"Error on attempt {attempt_num + 1}: {str(e)}")
+            # Continue to next variation instead of failing
+            continue
+    
+    # Use the best response we found
+    content = best_content
+    metadata = best_metadata
+    
+    logger.info(f"Final response selected. Content length: {len(content)}")
     
     # Send final response
     send_to_client(

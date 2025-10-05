@@ -284,7 +284,7 @@ export default function MultiChat() {
               response,
               messageTokens
             );
-            if ((response.action = ChatBotAction.FinalResponse)) {
+            if (response.action === ChatBotAction.FinalResponse) {
               session.running = false;
             }
             setChatSessions([...refChatSessions.current]);

@@ -232,9 +232,10 @@ export function updateChatSessions(
         ChatBotMessageType.Human
     ) {
       const lastMessage = messageHistory[messageHistory.length - 1];
-      if (lastMessage.metadata !== undefined) {
-        return;
-      }
+      // Remove the problematic return that prevents metadata updates
+      // if (lastMessage.metadata !== undefined) {
+      //   return;
+      // }
       lastMessage.tokens = lastMessage.tokens || [];
       if (hasToken) {
         lastMessage.tokens.push(token);

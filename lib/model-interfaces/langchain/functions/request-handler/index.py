@@ -80,6 +80,49 @@ def handle_heartbeat(record):
     )
 
 
+def preprocess_question(question):
+    """
+    Preprocess the question by removing punctuation and extra spaces
+    """
+    import re
+    import string
+    
+    # Remove punctuation marks
+    question = question.translate(str.maketrans('', '', string.punctuation))
+    
+    # Remove extra spaces (multiple spaces, leading/trailing spaces)
+    question = re.sub(r'\s+', ' ', question).strip()
+    
+    return question
+
+
+def is_not_found_response(content):
+    """
+    Check if the response indicates that information was not found in the document
+    """
+    if not content:
+        return False
+    
+    content_lower = content.lower()
+    not_found_indicators = [
+        "לא מצאתי במסמך",
+        "לא נמצא במסמך",
+        "אין מידע במסמך",
+        "לא קיים במסמך",
+        "המידע לא נמצא",
+        "לא נמצא מידע",
+        "אין תוכן רלוונטי",
+        "לא נמצא תוכן",
+        "not found in document",
+        "no information found",
+        "cannot find",
+        "no relevant information",
+        "information not available"
+    ]
+    
+    return any(indicator in content_lower for indicator in not_found_indicators)
+
+
 def handle_run(record):
     user_id = record["userId"]
     user_groups = record["userGroups"]
@@ -87,7 +130,7 @@ def handle_run(record):
     provider = data["provider"]
     model_id = data["modelName"]
     mode = data["mode"]
-    prompt = data["text"]
+    original_prompt = data["text"]
     workspace_id = data.get("workspaceId", None)
     session_id = data.get("sessionId")
     images = data.get("images", [])
@@ -97,6 +140,10 @@ def handle_run(record):
 
     if not session_id:
         session_id = str(uuid.uuid4())
+
+    # Preprocess the question
+    processed_prompt = preprocess_question(original_prompt)
+    logger.info(f"Original prompt: '{original_prompt}' -> Processed prompt: '{processed_prompt}'")
 
     adapter = registry.get_adapter(f"{provider}.{model_id}")
 
@@ -112,19 +159,56 @@ def handle_run(record):
         model_kwargs=data.get("modelKwargs", {}),
     )
 
-    response = model.run(
-        prompt=prompt,
-        workspace_id=workspace_id,
-        user_groups=user_groups,
-        images=images,
-        documents=documents,
-        videos=videos,
-        system_prompts=system_prompts,
-    )
+    # Try with processed prompt first, then retry with original if needed
+    max_retries = 2
+    retry_count = 0
+    response = None
+    
+    while retry_count < max_retries:
+        try:
+            # Use processed prompt on first try, original on retry
+            prompt_to_use = processed_prompt if retry_count == 0 else original_prompt
+            
+            logger.info(f"Attempt {retry_count + 1}: Using prompt: '{prompt_to_use}'")
+            
+            response = model.run(
+                prompt=prompt_to_use,
+                workspace_id=workspace_id,
+                user_groups=user_groups,
+                images=images,
+                documents=documents,
+                videos=videos,
+                system_prompts=system_prompts,
+            )
 
-    logger.debug(response)
+            logger.debug(response)
 
-    # כאן השינוי: עטיפה בפורמט שה-Frontend יודע לפרש
+            # Extract content and metadata from response
+            if isinstance(response, dict):
+                content = response.get("content", "")
+                metadata = response.get("metadata", {})
+            else:
+                content = str(response)
+                metadata = {}
+            
+            # Check if we got a "not found" response and should retry
+            if workspace_id and is_not_found_response(content) and retry_count < max_retries - 1:
+                logger.info(f"Got 'not found' response on attempt {retry_count + 1}, retrying...")
+                retry_count += 1
+                continue
+            else:
+                # Success or max retries reached
+                break
+                
+        except Exception as e:
+            logger.error(f"Error on attempt {retry_count + 1}: {str(e)}")
+            if retry_count < max_retries - 1:
+                retry_count += 1
+                continue
+            else:
+                raise e
+    
+    # Send final response
     send_to_client(
         {
             "type": "text",
@@ -134,7 +218,8 @@ def handle_run(record):
             "userGroups": user_groups,
             "data": {
                 "sessionId": session_id,
-                "content": response if isinstance(response, str) else str(response),
+                "content": content,
+                "metadata": metadata,
                 "type": "text"
             },
         }

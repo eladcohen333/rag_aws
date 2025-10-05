@@ -167,6 +167,42 @@ def is_not_found_response(content):
     return any(indicator in content_lower for indicator in not_found_indicators)
 
 
+def has_document_based_content(content, metadata):
+    """
+    Check if the response is based on actual document content
+    """
+    if not content or not metadata:
+        return False
+    
+    # Check if there are documents in metadata
+    documents = metadata.get("documents", [])
+    if not documents or len(documents) == 0:
+        return False
+    
+    # Check if the response contains specific information that suggests document usage
+    document_indicators = [
+        "על פי המסמך",
+        "במסמך נכתב",
+        "המסמך מציין",
+        "לפי המידע",
+        "בהתאם למסמך",
+        "המידע מציין",
+        "נמצא במסמך",
+        "according to the document",
+        "the document states",
+        "based on the information",
+        "as mentioned in"
+    ]
+    
+    content_lower = content.lower()
+    has_document_reference = any(indicator in content_lower for indicator in document_indicators)
+    
+    # Also check if response is substantial and has documents
+    is_substantial = len(content.strip()) > 50
+    
+    return has_document_reference or (is_substantial and len(documents) > 0)
+
+
 def is_meaningful_response(content):
     """
     Check if the response contains meaningful information (not just a generic response)
@@ -190,6 +226,44 @@ def is_meaningful_response(content):
     
     # If it's not a generic response and has reasonable length, consider it meaningful
     return not has_generic and len(content.strip()) > 20
+
+
+def is_high_quality_rag_response(content, metadata):
+    """
+    Check if this is a high-quality RAG response that should stop the search
+    """
+    if not content or not metadata:
+        return False
+    
+    # Must not be a "not found" response
+    if is_not_found_response(content):
+        return False
+    
+    # Must be meaningful
+    if not is_meaningful_response(content):
+        return False
+    
+    # Must be based on document content
+    if not has_document_based_content(content, metadata):
+        return False
+    
+    # Additional quality checks
+    content_lower = content.lower()
+    
+    # Avoid vague responses even if they reference documents
+    vague_responses = [
+        "אולי תבדוק",
+        "מומלץ לפנות",
+        "כדאי לברר",
+        "you might want to check",
+        "it's recommended to contact",
+        "you should verify"
+    ]
+    
+    has_vague_language = any(vague in content_lower for vague in vague_responses)
+    
+    # High quality response: has document content, meaningful, not vague, substantial length
+    return not has_vague_language and len(content.strip()) > 80
 
 
 def handle_run(record):
@@ -278,19 +352,26 @@ def handle_run(record):
                 best_content = content
                 best_metadata = metadata
             
-            # Check if this is a meaningful response
+            # Check if this is a high-quality response
             if workspace_id:
-                # For RAG queries, check if we found information in documents
-                if not is_not_found_response(content) and is_meaningful_response(content):
-                    logger.info(f"Found meaningful response on attempt {attempt_num + 1}")
+                # For RAG queries, use strict quality check that ensures document-based content
+                if is_high_quality_rag_response(content, metadata):
+                    logger.info(f"Found high-quality RAG response on attempt {attempt_num + 1}")
                     best_response = response
                     best_content = content
                     best_metadata = metadata
                     break
                 else:
-                    logger.info(f"Attempt {attempt_num + 1} returned no meaningful results, trying next variation...")
+                    # Keep this response if it's better than what we have, but continue searching
+                    if is_meaningful_response(content) and (not best_content or len(content) > len(best_content)):
+                        logger.info(f"Attempt {attempt_num + 1} - keeping as backup, but continuing search...")
+                        best_response = response
+                        best_content = content
+                        best_metadata = metadata
+                    else:
+                        logger.info(f"Attempt {attempt_num + 1} returned low-quality results, trying next variation...")
             else:
-                # For non-RAG queries, use the first successful response
+                # For non-RAG queries, use the first meaningful response
                 if is_meaningful_response(content):
                     logger.info(f"Got meaningful response on attempt {attempt_num + 1}")
                     best_response = response

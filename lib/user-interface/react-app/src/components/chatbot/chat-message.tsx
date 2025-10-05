@@ -303,8 +303,8 @@ export default function ChatMessage(props: ChatMessageProps) {
         }
         expandableContent={
           props.message.type == ChatBotMessageType.AI &&
-          ((props?.showMetadata && props.message.metadata) ||
-            (props.message.metadata && props.configuration?.showMetadata)) ? (
+          props?.showMetadata &&
+          props.message.metadata ? (
             <>
               <div dir="ltr">
                 <JsonView

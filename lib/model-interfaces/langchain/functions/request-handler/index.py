@@ -154,6 +154,10 @@ def is_not_found_response(content):
         "לא נמצא תוכן",
         "לא יכול למצוא",
         "אין מידע זמין",
+        "איני יכול לענות על שאלה זו כיוון שהיא אינה מכוסה במסמכים שסופקו",
+        "איני יכול לענות על שאלה זו",
+        "השאלה אינה מכוסה במסמכים",
+        "אינה מכוסה במסמכים שסופקו",
         "not found in document",
         "no information found",
         "cannot find",
@@ -161,7 +165,10 @@ def is_not_found_response(content):
         "information not available",
         "i don't have information",
         "no data available",
-        "unable to find"
+        "unable to find",
+        "i cannot answer this question as it is not covered in the provided documents",
+        "this question is not covered in the documents",
+        "not covered in the provided documents"
     ]
     
     return any(indicator in content_lower for indicator in not_found_indicators)

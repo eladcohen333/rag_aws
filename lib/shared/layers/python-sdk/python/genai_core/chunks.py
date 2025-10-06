@@ -134,22 +134,27 @@ def split_content(workspace: dict, content: str, file_size: Optional[int] = None
 
     if chunking_strategy == "semantic":
         if not SemanticChunker or not Embeddings:
-            print("Semantic chunker dependencies unavailable, falling back to recursive strategy.")
-        else:
-            print("Using semantic chunking")
-            embeddings_model = genai_core.embeddings.get_embeddings_model(
-                workspace.get("embeddings_model_provider"),
-                workspace.get("embeddings_model_name"),
-            )
-            if embeddings_model is None:
-                raise NewCommonError("Embeddings model not found for semantic chunking")
+            print("ERROR: Semantic chunker dependencies unavailable.")
+            raise NewCommonError("Semantic chunking dependencies unavailable")
 
-            splitter = SemanticChunker(
-                _SemanticChunkerEmbeddingsAdapter(embeddings_model)
-            )
+        print("Using semantic chunking")
+        embeddings_model = genai_core.embeddings.get_embeddings_model(
+            workspace.get("embeddings_model_provider"),
+            workspace.get("embeddings_model_name"),
+        )
+        if embeddings_model is None:
+            print("ERROR: Semantic chunking unavailable: embeddings model not found.")
+            raise NewCommonError("Embeddings model not found for semantic chunking")
+
+        splitter = SemanticChunker(_SemanticChunkerEmbeddingsAdapter(embeddings_model))
+        try:
             chunks = splitter.split_text(content)
-            print(f"Split into {len(chunks)} semantic chunks.")
-            return chunks or [content]
+        except Exception as exc:  # pragma: no cover - defensive logging
+            print(f"ERROR: Semantic chunking failed with error '{exc}'.")
+            raise NewCommonError("Semantic chunking failed") from exc
+
+        print(f"Split into {len(chunks)} semantic chunks.")
+        return chunks or [content]
 
     # Handle recursive chunking (either initially chosen or as fallback)
     if chunking_strategy == "recursive":

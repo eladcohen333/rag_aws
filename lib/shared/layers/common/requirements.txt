@@ -5,11 +5,11 @@ aws_requests_auth==0.4.3
 requests-aws4auth==1.2.3
 langchain==0.2.16
 langchain-core==0.2.38
-langchain-aws==0.1.17
+langchain-aws==0.1.16
 langchain-community==0.2.16
 langchain-openai==0.1.25
-langchain-text-splitters==0.2.4
 tiktoken==0.5.2
+langchain-text-splitters==0.2.4
 opensearch-py==2.4.2
 psycopg2-binary==2.9.7
 pgvector==0.2.2

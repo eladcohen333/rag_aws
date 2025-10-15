@@ -80,197 +80,208 @@ def handle_heartbeat(record):
     )
 
 
-def preprocess_question(question):
+class QuestionProcessor:
     """
-    Preprocess the question by removing punctuation and extra spaces
+    מעבד שאלות - ניקוי, ארגון והעשרה של שאלות בעברית לפני שליחה למודל
     """
-    import re
-    import string
     
-    # Remove punctuation marks
-    question = question.translate(str.maketrans('', '', string.punctuation))
+    def __init__(self):
+        # מילות שאלה בעברית בלבד
+        self.hebrew_question_words = [
+            'מה', 'איך', 'מתי', 'איפה', 'למה', 'מי', 'האם', 'כיצד',
+            'מדוע', 'כמה', 'איזה', 'איזו', 'מהו', 'מהי', 'האין'
+        ]
+        
+    def preprocess_question(self, question):
+        """
+        ניקוי ראשוני של השאלה - הסרת סימני פיסוק מיותרים ורווחים
+        """
+        import re
+        
+        if not question or not question.strip():
+            return question
+            
+        # הסרת סימני פיסוק מיותרים אבל שמירה על חיוניים
+        question = re.sub(r'[!]{2,}', '!', question)
+        question = re.sub(r'[?]{2,}', '?', question)
+        question = re.sub(r'[.]{2,}', '.', question)
+        
+        # הסרת רווחים מיותרים
+        question = re.sub(r'\s+', ' ', question).strip()
+        
+        return question
     
-    # Remove extra spaces (multiple spaces, leading/trailing spaces)
-    question = re.sub(r'\s+', ' ', question).strip()
+    def generate_search_variations(self, question):
+        """
+        יצירת 2 וריאציות בלבד של השאלה לחיפוש מקיף
+        """
+        import re
+        
+        variations = []
+        
+        # נסיון 1: השאלה המקורית לאחר ניקוי
+        processed = self.preprocess_question(question)
+        variations.append(("original", processed))
+        
+        # נסיון 2: גרסה משופרת - הסרת מילות שאלה והתמקדות במילות מפתח
+        enhanced = self._create_enhanced_variation(processed)
+        if enhanced and enhanced != processed and len(enhanced.strip()) > 0:
+            variations.append(("enhanced", enhanced))
+        
+        # מוגבל ל-2 נסיונות בלבד
+        return variations[:2]
     
-    return question
+    def _create_enhanced_variation(self, question):
+        """
+        יצירת וריאציה משופרת של השאלה - הסרת מילות שאלה והתמקדות במילות מפתח
+        """
+        import re
+        
+        # הסרת מילות שאלה בעברית
+        enhanced = question
+        for word in self.hebrew_question_words:
+            enhanced = re.sub(r'\b' + word + r'\b', '', enhanced, flags=re.IGNORECASE)
+        
+        # חילוץ מילות מפתח (מילים באורך 2+ תווים)
+        words = enhanced.split()
+        key_terms = [word for word in words if len(word) >= 2]
+        
+        if len(key_terms) >= 2:
+            # מיון לפי אורך כדי לתת עדיפות למילים חשובות יותר
+            sorted_terms = sorted(key_terms, key=len, reverse=True)
+            # לקיחת עד 4 מילים חשובות ביותר
+            enhanced = ' '.join(sorted_terms[:4])
+        else:
+            enhanced = ' '.join(key_terms)
+        
+        # ניקוי רווחים מיותרים
+        enhanced = re.sub(r'\s+', ' ', enhanced).strip()
+        
+        return enhanced if enhanced else question
 
 
-def generate_search_variations(question):
+class ResponseHandler:
     """
-    Generate different variations of the question for enhanced search
+    מטפל בתשובות - ניתוח, הערכה וארגון של תשובות המודל
     """
-    import re
     
-    variations = []
+    def __init__(self):
+        # אינדיקטורים לתשובות "לא נמצא" בעברית בלבד
+        self.not_found_indicators = [
+            "לא מצאתי במסמך", "לא נמצא במסמך", "אין מידע במסמך",
+            "לא קיים במסמך", "המידע לא נמצא", "לא נמצא מידע",
+            "אין תוכן רלוונטי", "לא נמצא תוכן", "לא יכול למצוא",
+            "אין מידע זמין", "איני יכול לענות על שאלה זו כיוון שהיא אינה מכוסה במסמכים שסופקו",
+            "איני יכול לענות על שאלה זו", "השאלה אינה מכוסה במסמכים",
+            "אינה מכוסה במסמכים שסופקו", "לא מצאתי מסמכים רלוונטיים"
+        ]
+        
+        # אינדיקטורים להתבססות על מסמכים
+        self.document_indicators = [
+            "על פי המסמך", "במסמך נכתב", "המסמך מציין",
+            "לפי המידע", "בהתאם למסמך", "המידע מציין", "נמצא במסמך",
+            "המסמך מתאר", "כפי שמופיע במסמך", "המידע במסמך"
+        ]
+        
+        # תשובות גנריות
+        self.generic_responses = [
+            "אני לא יודע", "לא יכול לענות", "אין לי מידע",
+            "מצטער, אין לי", "לא בטוח"
+        ]
+        
+        # תשובות מעורפלות
+        self.vague_responses = [
+            "אולי תבדוק", "מומלץ לפנות", "כדאי לברר",
+            "יש לוודא", "מומלץ לבדוק"
+        ]
     
-    # Original question
-    variations.append(question)
+    def is_not_found_response(self, content):
+        """
+        בדיקה האם התשובה מציינת שלא נמצא מידע במסמכים
+        """
+        if not content:
+            return False
+        
+        content_lower = content.lower()
+        return any(indicator in content_lower for indicator in self.not_found_indicators)
     
-    # Remove common question words
-    question_words = ['מה', 'איך', 'מתי', 'איפה', 'למה', 'מי', 'what', 'how', 'when', 'where', 'why', 'who']
-    no_question_words = question
-    for word in question_words:
-        no_question_words = re.sub(r'\b' + word + r'\b', '', no_question_words, flags=re.IGNORECASE)
-    no_question_words = re.sub(r'\s+', ' ', no_question_words).strip()
-    if no_question_words and no_question_words != question:
-        variations.append(no_question_words)
+    def has_document_based_content(self, content, metadata):
+        """
+        בדיקה האם התשובה מבוססת על תוכן מסמכים אמיתי
+        """
+        if not content or not metadata:
+            return False
+        
+        documents = metadata.get("documents", [])
+        if not documents or len(documents) == 0:
+            return False
+        
+        content_lower = content.lower()
+        has_document_reference = any(indicator in content_lower for indicator in self.document_indicators)
+        
+        # בדיקה נוספת - תשובה משמעותית עם מסמכים
+        is_substantial = len(content.strip()) > 50
+        
+        return has_document_reference or (is_substantial and len(documents) > 0)
     
-    # Extract key terms (words longer than 2 characters)
-    key_terms = [word for word in question.split() if len(word) > 2]
-    if len(key_terms) > 1:
-        variations.append(' '.join(key_terms))
+    def is_meaningful_response(self, content):
+        """
+        בדיקה האם התשובה מכילה מידע משמעותי
+        """
+        if not content or len(content.strip()) < 10:
+            return False
+        
+        content_lower = content.lower()
+        has_generic = any(generic in content_lower for generic in self.generic_responses)
+        
+        return not has_generic and len(content.strip()) > 20
     
-    # Try with only the most important words (longest words)
-    if len(key_terms) > 2:
-        sorted_terms = sorted(key_terms, key=len, reverse=True)
-        variations.append(' '.join(sorted_terms[:3]))
+    def is_high_quality_response(self, content, metadata):
+        """
+        בדיקה האם זו תשובה איכותית שצריכה לעצור את החיפוש
+        """
+        if not content or not metadata:
+            return False
+        
+        # לא יכולה להיות תשובת "לא נמצא"
+        if self.is_not_found_response(content):
+            return False
+        
+        # חייבת להיות משמעותית
+        if not self.is_meaningful_response(content):
+            return False
+        
+        # חייבת להיות מבוססת על מסמכים
+        if not self.has_document_based_content(content, metadata):
+            return False
+        
+        # בדיקות איכות נוספות
+        content_lower = content.lower()
+        has_vague_language = any(vague in content_lower for vague in self.vague_responses)
+        
+        # תשובה איכותית: יש תוכן מסמכים, משמעותית, לא מעורפלת, אורך מספיק
+        return not has_vague_language and len(content.strip()) > 80
     
-    # Remove duplicates while preserving order
-    unique_variations = []
-    for var in variations:
-        if var and var not in unique_variations:
-            unique_variations.append(var)
-    
-    return unique_variations
-
-
-def is_not_found_response(content):
-    """
-    Check if the response indicates that information was not found in the document
-    """
-    if not content:
-        return False
-    
-    content_lower = content.lower()
-    not_found_indicators = [
-        "לא מצאתי במסמך",
-        "לא נמצא במסמך",
-        "אין מידע במסמך",
-        "לא קיים במסמך",
-        "המידע לא נמצא",
-        "לא נמצא מידע",
-        "אין תוכן רלוונטי",
-        "לא נמצא תוכן",
-        "לא יכול למצוא",
-        "אין מידע זמין",
-        "איני יכול לענות על שאלה זו כיוון שהיא אינה מכוסה במסמכים שסופקו",
-        "איני יכול לענות על שאלה זו",
-        "השאלה אינה מכוסה במסמכים",
-        "אינה מכוסה במסמכים שסופקו",
-        "not found in document",
-        "no information found",
-        "cannot find",
-        "no relevant information",
-        "information not available",
-        "i don't have information",
-        "no data available",
-        "unable to find",
-        "i cannot answer this question as it is not covered in the provided documents",
-        "this question is not covered in the documents",
-        "not covered in the provided documents"
-    ]
-    
-    return any(indicator in content_lower for indicator in not_found_indicators)
-
-
-def has_document_based_content(content, metadata):
-    """
-    Check if the response is based on actual document content
-    """
-    if not content or not metadata:
-        return False
-    
-    # Check if there are documents in metadata
-    documents = metadata.get("documents", [])
-    if not documents or len(documents) == 0:
-        return False
-    
-    # Check if the response contains specific information that suggests document usage
-    document_indicators = [
-        "על פי המסמך",
-        "במסמך נכתב",
-        "המסמך מציין",
-        "לפי המידע",
-        "בהתאם למסמך",
-        "המידע מציין",
-        "נמצא במסמך",
-        "according to the document",
-        "the document states",
-        "based on the information",
-        "as mentioned in"
-    ]
-    
-    content_lower = content.lower()
-    has_document_reference = any(indicator in content_lower for indicator in document_indicators)
-    
-    # Also check if response is substantial and has documents
-    is_substantial = len(content.strip()) > 50
-    
-    return has_document_reference or (is_substantial and len(documents) > 0)
-
-
-def is_meaningful_response(content):
-    """
-    Check if the response contains meaningful information (not just a generic response)
-    """
-    if not content or len(content.strip()) < 10:
-        return False
-    
-    # Check for generic responses that indicate no real information
-    generic_responses = [
-        "אני לא יודע",
-        "לא יכול לענות",
-        "אין לי מידע",
-        "i don't know",
-        "i cannot answer",
-        "i'm not sure",
-        "sorry, i don't have"
-    ]
-    
-    content_lower = content.lower()
-    has_generic = any(generic in content_lower for generic in generic_responses)
-    
-    # If it's not a generic response and has reasonable length, consider it meaningful
-    return not has_generic and len(content.strip()) > 20
-
-
-def is_high_quality_rag_response(content, metadata):
-    """
-    Check if this is a high-quality RAG response that should stop the search
-    """
-    if not content or not metadata:
-        return False
-    
-    # Must not be a "not found" response
-    if is_not_found_response(content):
-        return False
-    
-    # Must be meaningful
-    if not is_meaningful_response(content):
-        return False
-    
-    # Must be based on document content
-    if not has_document_based_content(content, metadata):
-        return False
-    
-    # Additional quality checks
-    content_lower = content.lower()
-    
-    # Avoid vague responses even if they reference documents
-    vague_responses = [
-        "אולי תבדוק",
-        "מומלץ לפנות",
-        "כדאי לברר",
-        "you might want to check",
-        "it's recommended to contact",
-        "you should verify"
-    ]
-    
-    has_vague_language = any(vague in content_lower for vague in vague_responses)
-    
-    # High quality response: has document content, meaningful, not vague, substantial length
-    return not has_vague_language and len(content.strip()) > 80
+    def generate_no_documents_found_response(self, original_question, attempts_made):
+        """
+        יצירת תשובה מובנית למקרה של "לא נמצאו מסמכים"
+        """
+        structured_response = {
+            "content": f"לא מצאתי מסמכים רלוונטיים לשאלה '{original_question}' במאגר הנתונים הנוכחי.",
+            "metadata": {
+                "response_type": "no_documents_found",
+                "original_question": original_question,
+                "search_attempts": attempts_made,
+                "suggestions": [
+                    "נסה לנסח את השאלה בצורה שונה",
+                    "השתמש במילות מפתח אחרות",
+                    "בדוק אם המסמכים הרלוונטיים הועלו למערכת"
+                ],
+                "documents": [],
+                "timestamp": str(int(round(datetime.now().timestamp())))
+            }
+        }
+        return structured_response
 
 
 def handle_run(record):
@@ -291,6 +302,10 @@ def handle_run(record):
     if not session_id:
         session_id = str(uuid.uuid4())
 
+    # יצירת מעבדי השאלות והתשובות
+    question_processor = QuestionProcessor()
+    response_handler = ResponseHandler()
+
     adapter = registry.get_adapter(f"{provider}.{model_id}")
 
     adapter.on_llm_new_token = lambda *args, **kwargs: on_llm_new_token(
@@ -305,33 +320,20 @@ def handle_run(record):
         model_kwargs=data.get("modelKwargs", {}),
     )
 
-    # Enhanced search strategy with multiple attempts
+    # יצירת Pipeline לעיבוד שאלות - מוגבל ל-2 נסיונות בלבד
     best_response = None
     best_content = ""
     best_metadata = {}
     
-    # Generate search variations for comprehensive search
-    search_variations = []
+    # יצירת וריאציות השאלה (מקסימום 2)
+    search_variations = question_processor.generate_search_variations(original_prompt)
     
-    # Add preprocessed question
-    processed_prompt = preprocess_question(original_prompt)
-    search_variations.append(("processed", processed_prompt))
+    logger.info(f"Starting streamlined search with {len(search_variations)} attempts (max 2)")
     
-    # Add original question
-    search_variations.append(("original", original_prompt))
-    
-    # Add question variations only if we have a workspace (RAG enabled)
-    if workspace_id:
-        variations = generate_search_variations(original_prompt)
-        for i, variation in enumerate(variations[2:], 1):  # Skip first two (already added)
-            search_variations.append((f"variation_{i}", variation))
-    
-    logger.info(f"Starting enhanced search with {len(search_variations)} variations")
-    
-    # Try each search variation until we get a meaningful response
+    # ביצוע נסיונות חיפוש מוגבלים
     for attempt_num, (variation_type, prompt_to_use) in enumerate(search_variations):
         try:
-            logger.info(f"Attempt {attempt_num + 1} ({variation_type}): '{prompt_to_use}'")
+            logger.info(f"Attempt {attempt_num + 1}/{len(search_variations)} ({variation_type}): '{prompt_to_use}'")
             
             response = model.run(
                 prompt=prompt_to_use,
@@ -345,7 +347,7 @@ def handle_run(record):
 
             logger.debug(f"Response from attempt {attempt_num + 1}: {response}")
 
-            # Extract content and metadata from response
+            # חילוץ תוכן ומטא-דאטה מהתשובה
             if isinstance(response, dict):
                 content = response.get("content", "")
                 metadata = response.get("metadata", {})
@@ -353,33 +355,33 @@ def handle_run(record):
                 content = str(response)
                 metadata = {}
             
-            # Always keep the first response as fallback
+            # שמירת התשובה הראשונה כגיבוי
             if best_response is None:
                 best_response = response
                 best_content = content
                 best_metadata = metadata
             
-            # Check if this is a high-quality response
+            # בדיקת איכות התשובה
             if workspace_id:
-                # For RAG queries, use strict quality check that ensures document-based content
-                if is_high_quality_rag_response(content, metadata):
+                # עבור שאלות RAG - בדיקה קפדנית לתוכן מבוסס מסמכים
+                if response_handler.is_high_quality_response(content, metadata):
                     logger.info(f"Found high-quality RAG response on attempt {attempt_num + 1}")
                     best_response = response
                     best_content = content
                     best_metadata = metadata
                     break
                 else:
-                    # Keep this response if it's better than what we have, but continue searching
-                    if is_meaningful_response(content) and (not best_content or len(content) > len(best_content)):
-                        logger.info(f"Attempt {attempt_num + 1} - keeping as backup, but continuing search...")
+                    # שמירת תשובה טובה יותר אם קיימת
+                    if response_handler.is_meaningful_response(content) and (not best_content or len(content) > len(best_content)):
+                        logger.info(f"Attempt {attempt_num + 1} - keeping as backup")
                         best_response = response
                         best_content = content
                         best_metadata = metadata
                     else:
-                        logger.info(f"Attempt {attempt_num + 1} returned low-quality results, trying next variation...")
+                        logger.info(f"Attempt {attempt_num + 1} returned insufficient results")
             else:
-                # For non-RAG queries, use the first meaningful response
-                if is_meaningful_response(content):
+                # עבור שאלות רגילות - שימוש בתשובה משמעותית ראשונה
+                if response_handler.is_meaningful_response(content):
                     logger.info(f"Got meaningful response on attempt {attempt_num + 1}")
                     best_response = response
                     best_content = content
@@ -388,16 +390,23 @@ def handle_run(record):
                 
         except Exception as e:
             logger.error(f"Error on attempt {attempt_num + 1}: {str(e)}")
-            # Continue to next variation instead of failing
             continue
     
-    # Use the best response we found
-    content = best_content
-    metadata = best_metadata
+    # בדיקה אם לא נמצאו מסמכים רלוונטיים ויצירת תשובה מובנית
+    if workspace_id and response_handler.is_not_found_response(best_content):
+        logger.info("No relevant documents found, generating structured response")
+        structured_response = response_handler.generate_no_documents_found_response(
+            original_prompt, len(search_variations)
+        )
+        content = structured_response["content"]
+        metadata = structured_response["metadata"]
+    else:
+        content = best_content
+        metadata = best_metadata
     
-    logger.info(f"Final response selected. Content length: {len(content)}")
+    logger.info(f"Final response selected. Content length: {len(content)}, Type: {metadata.get('response_type', 'standard')}")
     
-    # Send final response
+    # שליחת התשובה הסופית
     send_to_client(
         {
             "type": "text",

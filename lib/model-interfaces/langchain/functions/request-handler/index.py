@@ -27,12 +27,37 @@ API_KEYS_SECRETS_ARN = os.environ["API_KEYS_SECRETS_ARN"]  # ARN of the Secrets 
 sequence_number = 0  # Used to preserve token order when streaming partial model outputs
 
 
+class StreamingAttemptBuffer:
+    """Buffers streaming tokens per attempt so the client only sees the chosen response."""
+
+    def __init__(self):
+        self._buffers = {}
+
+    def start_attempt(self, attempt_id):
+        self._buffers[attempt_id] = []
+
+    def append(self, attempt_id, payload):
+        if attempt_id is None:
+            return False
+        self._buffers.setdefault(attempt_id, []).append(payload)
+        return True
+
+    def drain(self, attempt_id):
+        return self._buffers.pop(attempt_id, [])
+
+    def discard(self, attempt_id):
+        self._buffers.pop(attempt_id, None)
+
+    def clear(self):
+        self._buffers.clear()
+
+
 def on_llm_new_token(user_id, session_id, self, token, run_id, chunk, parent_run_id, *args, **kwargs):
     """
     Handles streaming tokens emitted by the LLM in real-time.
     Sends them back to the connected WebSocket client incrementally.
     """
-    if self.disable_streaming:  # If streaming is disabled for this adapter (e.g., some models don’t support streaming)
+    if self.disable_streaming:  # If streaming is disabled for this adapter (e.g., some models don't support streaming)
         logger.debug("Streaming is disabled, ignoring token")
         return
 
@@ -55,22 +80,27 @@ def on_llm_new_token(user_id, session_id, self, token, run_id, chunk, parent_run
     run_id = str(run_id)  # Ensure run ID is a string (UUID-safe for WebSocket)
 
     # Build structured WebSocket message with token information
-    send_to_client(
-        {
-            "type": "text",
-            "action": ChatbotAction.LLM_NEW_TOKEN.value,  # Action: send incremental token update
-            "userId": user_id,
-            "timestamp": str(int(round(datetime.now().timestamp()))),  # Current timestamp (epoch seconds)
-            "data": {
-                "sessionId": session_id,  # The chat session associated with this token stream
-                "token": {
-                    "runId": run_id,  # Unique ID for this inference run
-                    "sequenceNumber": sequence_number,  # The order index of this token
-                    "value": text,  # The actual generated token text
-                },
+    message_payload = {
+        "type": "text",
+        "action": ChatbotAction.LLM_NEW_TOKEN.value,  # Action: send incremental token update
+        "userId": user_id,
+        "timestamp": str(int(round(datetime.now().timestamp()))),  # Current timestamp (epoch seconds)
+        "data": {
+            "sessionId": session_id,  # The chat session associated with this token stream
+            "token": {
+                "runId": run_id,  # Unique ID for this inference run
+                "sequenceNumber": sequence_number,  # The order index of this token
+                "value": text,  # The actual generated token text
             },
-        }
-    )
+        },
+    }
+
+    attempt_buffer = getattr(self, "stream_attempt_buffer", None)
+    current_attempt = getattr(self, "current_attempt_id", None)
+    if attempt_buffer and attempt_buffer.append(current_attempt, message_payload):
+        return
+
+    send_to_client(message_payload)
 
 
 def handle_heartbeat(record):
@@ -346,10 +376,14 @@ def handle_run(record):
         model_kwargs=data.get("modelKwargs", {}),
     )
 
+    model.stream_attempt_buffer = StreamingAttemptBuffer()
+    model.current_attempt_id = None
+
     # Variables for best response tracking
     best_response = None
     best_content = ""
     best_metadata = {}
+    best_attempt_index = None
 
     # Generate cleaned/refined question variations (max 2)
     search_variations = question_processor.generate_search_variations(original_prompt)
@@ -357,6 +391,9 @@ def handle_run(record):
 
     # Iterate through variations sequentially
     for attempt_num, (variation_type, prompt_to_use) in enumerate(search_variations):
+        model.current_attempt_id = attempt_num
+        model.stream_attempt_buffer.start_attempt(attempt_num)
+
         try:
             logger.info(f"Attempt {attempt_num + 1}/{len(search_variations)} ({variation_type}): '{prompt_to_use}'")
 
@@ -382,6 +419,7 @@ def handle_run(record):
             # Store the first response as a fallback baseline
             if best_response is None:
                 best_response, best_content, best_metadata = response, content, metadata
+                best_attempt_index = attempt_num
 
             # Evaluate response quality depending on RAG mode
             if workspace_id:
@@ -389,6 +427,7 @@ def handle_run(record):
                 if response_handler.is_high_quality_response(content, metadata):
                     logger.info(f"Found high-quality RAG response on attempt {attempt_num + 1}")
                     best_response, best_content, best_metadata = response, content, metadata
+                    best_attempt_index = attempt_num
                     break  # Stop pipeline early (good answer)
                 else:
                     reason = response_handler.get_failure_reason(content, metadata)
@@ -398,6 +437,7 @@ def handle_run(record):
                 if response_handler.is_meaningful_response(content):
                     logger.info(f"Got meaningful non-RAG response on attempt {attempt_num + 1}")
                     best_response, best_content, best_metadata = response, content, metadata
+                    best_attempt_index = attempt_num
                     break
                 else:
                     reason = response_handler.get_failure_reason(content, metadata)
@@ -406,15 +446,27 @@ def handle_run(record):
         except Exception as e:
             # Log any runtime error per attempt without halting the pipeline
             logger.error(f"Error on attempt {attempt_num + 1}: {str(e)}")
+            model.stream_attempt_buffer.discard(attempt_num)
             continue
 
-    # Handle final fallback: if all attempts failed or “no docs found”
+    model.current_attempt_id = None
+
+    # Handle final fallback: if all attempts failed or no docs found
+    use_structured_response = False
     if workspace_id and response_handler.is_not_found_response(best_content):
         logger.info("No relevant documents found, generating structured response")
         structured = response_handler.generate_no_documents_found_response(original_prompt, len(search_variations))
         content, metadata = structured["content"], structured["metadata"]
+        use_structured_response = True
     else:
         content, metadata = best_content, best_metadata
+
+    if not use_structured_response and best_attempt_index is not None:
+        for token_message in model.stream_attempt_buffer.drain(best_attempt_index):
+            send_to_client(token_message)
+        model.stream_attempt_buffer.clear()
+    else:
+        model.stream_attempt_buffer.clear()
 
     logger.info(f"Final response selected. Content length: {len(content)}, Type: {metadata.get('response_type', 'standard')}")
 

@@ -1,62 +1,72 @@
-import os
-import json
-import uuid
-from datetime import datetime
-from genai_core.registry import registry
-from aws_lambda_powertools import Logger, Tracer
-from aws_lambda_powertools.utilities import parameters
-from aws_lambda_powertools.utilities.batch import BatchProcessor, EventType
-from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError
-from aws_lambda_powertools.utilities.data_classes.sqs_event import SQSRecord
-from aws_lambda_powertools.utilities.typing import LambdaContext
+import os  # Provides access to environment variables like AWS_REGION and secrets
+import json  # Used to serialize/deserialize messages between SQS and Lambda
+import uuid  # Generates unique session IDs for each chatbot interaction
+from datetime import datetime  # Used for timestamps in logging and WebSocket messages
+from genai_core.registry import registry  # Handles model adapter registration for Bedrock, OpenAI, etc.
+from aws_lambda_powertools import Logger, Tracer  # Provides structured logging and tracing for Lambda observability
+from aws_lambda_powertools.utilities import parameters  # Fetches secrets and parameters from AWS Secrets Manager or SSM
+from aws_lambda_powertools.utilities.batch import BatchProcessor, EventType  # Simplifies batch processing for SQS-triggered Lambdas
+from aws_lambda_powertools.utilities.batch.exceptions import BatchProcessingError  # Exception class for batch processing errors
+from aws_lambda_powertools.utilities.data_classes.sqs_event import SQSRecord  # Provides type-safe handling for SQS messages
+from aws_lambda_powertools.utilities.typing import LambdaContext  # Typing hint for AWS Lambda context object
 
-import adapters  # noqa: F401 Needed to register the adapters
-from genai_core.utils.websocket import send_to_client
-from genai_core.types import ChatbotAction
+import adapters  # noqa: F401 - Required import to register all supported model adapters
+from genai_core.utils.websocket import send_to_client  # Helper function to send messages to WebSocket clients in real-time
+from genai_core.types import ChatbotAction  # Enum defining possible chatbot actions (RUN, HEARTBEAT, FINAL_RESPONSE, etc.)
 
-processor = BatchProcessor(event_type=EventType.SQS)
-tracer = Tracer()
-logger = Logger()
+# Initialize AWS Lambda Powertools utilities
+processor = BatchProcessor(event_type=EventType.SQS)  # Handles SQS batch records efficiently
+tracer = Tracer()  # Enables AWS X-Ray distributed tracing
+logger = Logger()  # Provides JSON-structured logging with correlation IDs and tracing context
 
-AWS_REGION = os.environ["AWS_REGION"]
-API_KEYS_SECRETS_ARN = os.environ["API_KEYS_SECRETS_ARN"]
+# Retrieve essential environment variables for region and secrets
+AWS_REGION = os.environ["AWS_REGION"]  # The AWS region in which the Lambda runs
+API_KEYS_SECRETS_ARN = os.environ["API_KEYS_SECRETS_ARN"]  # ARN of the Secrets Manager key storing model API credentials
 
-sequence_number = 0
+# Global sequence counter for token streaming order
+sequence_number = 0  # Used to preserve token order when streaming partial model outputs
 
 
-def on_llm_new_token(
-    user_id, session_id, self, token, run_id, chunk, parent_run_id, *args, **kwargs
-):
-    if self.disable_streaming:
+def on_llm_new_token(user_id, session_id, self, token, run_id, chunk, parent_run_id, *args, **kwargs):
+    """
+    Handles streaming tokens emitted by the LLM in real-time.
+    Sends them back to the connected WebSocket client incrementally.
+    """
+    if self.disable_streaming:  # If streaming is disabled for this adapter (e.g., some models don’t support streaming)
         logger.debug("Streaming is disabled, ignoring token")
         return
+
+    # Handle both LangChain legacy format (string) and new ChatML format (list of dicts)
     if isinstance(token, list):
-        # When using the newer Chat objects from Langchain.
-        # Token is not a string
         text = ""
         for t in token:
-            if "text" in t:
-                text = text + t.get("text")
+            if "text" in t:  # Extract text part from each token dictionary
+                text += t.get("text")
     else:
-        text = token
-    if text is None or len(text) == 0:
+        text = token  # Old-style string token
+
+    if not text:  # Ignore empty tokens
         return
+
+    # Use global sequence number to maintain incremental ordering of tokens
     global sequence_number
     sequence_number += 1
-    run_id = str(run_id)
 
+    run_id = str(run_id)  # Ensure run ID is a string (UUID-safe for WebSocket)
+
+    # Build structured WebSocket message with token information
     send_to_client(
         {
             "type": "text",
-            "action": ChatbotAction.LLM_NEW_TOKEN.value,
+            "action": ChatbotAction.LLM_NEW_TOKEN.value,  # Action: send incremental token update
             "userId": user_id,
-            "timestamp": str(int(round(datetime.now().timestamp()))),
+            "timestamp": str(int(round(datetime.now().timestamp()))),  # Current timestamp (epoch seconds)
             "data": {
-                "sessionId": session_id,
+                "sessionId": session_id,  # The chat session associated with this token stream
                 "token": {
-                    "runId": run_id,
-                    "sequenceNumber": sequence_number,
-                    "value": text,
+                    "runId": run_id,  # Unique ID for this inference run
+                    "sequenceNumber": sequence_number,  # The order index of this token
+                    "value": text,  # The actual generated token text
                 },
             },
         }
@@ -64,17 +74,22 @@ def on_llm_new_token(
 
 
 def handle_heartbeat(record):
-    user_id = record["userId"]
-    session_id = record["data"]["sessionId"]
+    """
+    Sends periodic heartbeat pings to keep WebSocket connections alive.
+    This helps ensure the user session remains active even when no message is being sent.
+    """
+    user_id = record["userId"]  # Extract user ID from the heartbeat record
+    session_id = record["data"]["sessionId"]  # Extract session ID for which heartbeat is triggered
 
+    # Send structured WebSocket heartbeat message
     send_to_client(
         {
             "type": "text",
-            "action": ChatbotAction.HEARTBEAT.value,
+            "action": ChatbotAction.HEARTBEAT.value,  # Action type defined in ChatbotAction enum
             "timestamp": str(int(round(datetime.now().timestamp()))),
             "userId": user_id,
             "data": {
-                "sessionId": session_id,
+                "sessionId": session_id,  # Identifies which client connection the ping belongs to
             },
         }
     )
@@ -82,91 +97,93 @@ def handle_heartbeat(record):
 
 class QuestionProcessor:
     """
-    מעבד שאלות - ניקוי, ארגון והעשרה של שאלות בעברית לפני שליחה למודל
+    Responsible for preprocessing and enriching Hebrew user questions before sending them to the model.
+    Implements a two-step pipeline:
+      1. Clean punctuation and whitespace.
+      2. Generate a refined version removing generic question words.
     """
-    
+
     def __init__(self):
-        # מילות שאלה בעברית בלבד
+        # Common Hebrew question words to remove in the refined version (e.g., "מה", "איך", "למה")
         self.hebrew_question_words = [
             'מה', 'איך', 'מתי', 'איפה', 'למה', 'מי', 'האם', 'כיצד',
-            'מדוע', 'כמה', 'איזה', 'איזו', 'מהו', 'מהי', 'האין'
+            'מדוע', 'כמה', 'איזה', 'איזו', 'מהו', 'מהי', 'האין',
+            'תגיד', 'יש', 'האם יש', 'יש איזה'
         ]
-        
-    def preprocess_question(self, question):
+
+    def preprocess_question(self, question: str) -> str:
         """
-        ניקוי ראשוני של השאלה - הסרת סימני פיסוק מיותרים ורווחים
+        Performs light cleaning of the question by removing redundant punctuation and normalizing whitespace.
+        Keeps the structure and intent intact.
         """
-        import re
-        
-        if not question or not question.strip():
+        import re  # Regular expressions are used for cleanup operations
+        if not question or not question.strip():  # Return as-is if question is empty or only whitespace
             return question
-            
-        # הסרת סימני פיסוק מיותרים אבל שמירה על חיוניים
-        question = re.sub(r'[!]{2,}', '!', question)
-        question = re.sub(r'[?]{2,}', '?', question)
-        question = re.sub(r'[.]{2,}', '.', question)
-        
-        # הסרת רווחים מיותרים
+
+        # Replace multiple punctuation marks (e.g., "?!...") with a single space
+        question = re.sub(r'[!?.,;:\-]+', ' ', question)
+
+        # Normalize multiple spaces to one, and trim leading/trailing whitespace
         question = re.sub(r'\s+', ' ', question).strip()
-        
-        return question
-    
-    def generate_search_variations(self, question):
+
+        return question  # Return the cleaned version of the question
+
+    def _create_enhanced_variation(self, question: str) -> str:
         """
-        יצירת 2 וריאציות בלבד של השאלה לחיפוש מקיף
-        """
-        import re
-        
-        variations = []
-        
-        # נסיון 1: השאלה המקורית לאחר ניקוי
-        processed = self.preprocess_question(question)
-        variations.append(("original", processed))
-        
-        # נסיון 2: גרסה משופרת - הסרת מילות שאלה והתמקדות במילות מפתח
-        enhanced = self._create_enhanced_variation(processed)
-        if enhanced and enhanced != processed and len(enhanced.strip()) > 0:
-            variations.append(("enhanced", enhanced))
-        
-        # מוגבל ל-2 נסיונות בלבד
-        return variations[:2]
-    
-    def _create_enhanced_variation(self, question):
-        """
-        יצירת וריאציה משופרת של השאלה - הסרת מילות שאלה והתמקדות במילות מפתח
+        Produces a refined version of the question by removing generic Hebrew question words.
+        This helps focus retrieval on meaningful content (keywords) rather than phrasing.
+        Example:
+            Input:  "תגיד, יש איזה שינוי מיוחד בטופס 106 השנה לגבי השכר במגזר הציבורי?"
+            Output: "יש שינוי מיוחד בטופס 106 השנה לגבי השכר במגזר הציבורי"
         """
         import re
-        
-        # הסרת מילות שאלה בעברית
-        enhanced = question
+        enhanced = question  # Start with the cleaned question as base
+
+        # Remove common question words if they appear as standalone tokens
         for word in self.hebrew_question_words:
-            enhanced = re.sub(r'\b' + word + r'\b', '', enhanced, flags=re.IGNORECASE)
-        
-        # חילוץ מילות מפתח (מילים באורך 2+ תווים)
-        words = enhanced.split()
-        key_terms = [word for word in words if len(word) >= 2]
-        
-        if len(key_terms) >= 2:
-            # מיון לפי אורך כדי לתת עדיפות למילים חשובות יותר
-            sorted_terms = sorted(key_terms, key=len, reverse=True)
-            # לקיחת עד 4 מילים חשובות ביותר
-            enhanced = ' '.join(sorted_terms[:4])
-        else:
-            enhanced = ' '.join(key_terms)
-        
-        # ניקוי רווחים מיותרים
+            pattern = rf"\b{word}\b"  # Word-boundary ensures partial matches (e.g., "מהות") aren’t removed
+            enhanced = re.sub(pattern, '', enhanced, flags=re.IGNORECASE)
+
+        # Clean up redundant spaces after removal
         enhanced = re.sub(r'\s+', ' ', enhanced).strip()
-        
-        return enhanced if enhanced else question
 
+        # If the result becomes too short (less than 5 words), revert to the original question
+        if len(enhanced.split()) < 5:
+            return question
 
+        return enhanced
+
+    def generate_search_variations(self, question: str):
+        """
+        Generates up to two query variations for the search pipeline:
+          1. cleaned – punctuation/spacing normalized.
+          2. refined – generic Hebrew question words removed for semantic precision.
+        Returns:
+            List of tuples: [(“cleaned”, str), (“refined”, str)]
+        """
+        variations = []  # Holds the tuple list (variation_type, text)
+
+        # Step 1: Generate cleaned version
+        cleaned = self.preprocess_question(question)
+        variations.append(("cleaned", cleaned))
+
+        # Step 2: Generate refined version (if different)
+        enhanced = self._create_enhanced_variation(cleaned)
+        if enhanced != cleaned:
+            variations.append(("refined", enhanced))
+
+        # Limit to a maximum of two attempts
+        return variations[:2]
 class ResponseHandler:
     """
-    מטפל בתשובות - ניתוח, הערכה וארגון של תשובות המודל
+    Handles model responses:
+    - Determines if a response is document-based, meaningful, or generic.
+    - Evaluates quality to decide whether to retry or finalize.
+    - Generates fallback responses when no documents are found.
     """
-    
+
     def __init__(self):
-        # אינדיקטורים לתשובות "לא נמצא" בעברית בלבד
+        # Common Hebrew phrases that indicate the model didn’t find relevant data in documents
         self.not_found_indicators = [
             "לא מצאתי במסמך", "לא נמצא במסמך", "אין מידע במסמך",
             "לא קיים במסמך", "המידע לא נמצא", "לא נמצא מידע",
@@ -175,98 +192,100 @@ class ResponseHandler:
             "איני יכול לענות על שאלה זו", "השאלה אינה מכוסה במסמכים",
             "אינה מכוסה במסמכים שסופקו", "לא מצאתי מסמכים רלוונטיים"
         ]
-        
-        # אינדיקטורים להתבססות על מסמכים
+
+        # Indicators that a response explicitly references a document
         self.document_indicators = [
             "על פי המסמך", "במסמך נכתב", "המסמך מציין",
             "לפי המידע", "בהתאם למסמך", "המידע מציין", "נמצא במסמך",
             "המסמך מתאר", "כפי שמופיע במסמך", "המידע במסמך"
         ]
-        
-        # תשובות גנריות
+
+        # Generic fallback phrases meaning “I don’t know”
         self.generic_responses = [
             "אני לא יודע", "לא יכול לענות", "אין לי מידע",
             "מצטער, אין לי", "לא בטוח"
         ]
-        
-        # תשובות מעורפלות
+
+        # Vague or non-committal responses
         self.vague_responses = [
             "אולי תבדוק", "מומלץ לפנות", "כדאי לברר",
             "יש לוודא", "מומלץ לבדוק"
         ]
-    
+
     def is_not_found_response(self, content):
-        """
-        בדיקה האם התשובה מציינת שלא נמצא מידע במסמכים
-        """
+        """Checks if the response contains any known “no data found” indicators."""
         if not content:
             return False
-        
         content_lower = content.lower()
-        return any(indicator in content_lower for indicator in self.not_found_indicators)
-    
+        return any(ind in content_lower for ind in self.not_found_indicators)
+
     def has_document_based_content(self, content, metadata):
         """
-        בדיקה האם התשובה מבוססת על תוכן מסמכים אמיתי
+        Determines whether the response actually references source documents.
+        This ensures the model grounded its answer in retrieved evidence.
         """
         if not content or not metadata:
             return False
-        
         documents = metadata.get("documents", [])
-        if not documents or len(documents) == 0:
+        if not documents:
             return False
-        
         content_lower = content.lower()
-        has_document_reference = any(indicator in content_lower for indicator in self.document_indicators)
-        
-        # בדיקה נוספת - תשובה משמעותית עם מסמכים
-        is_substantial = len(content.strip()) > 50
-        
-        return has_document_reference or (is_substantial and len(documents) > 0)
-    
+        has_reference = any(ind in content_lower for ind in self.document_indicators)
+        # Consider also responses with sufficient length and attached documents as valid
+        return has_reference or (len(content.strip()) > 50 and len(documents) > 0)
+
     def is_meaningful_response(self, content):
-        """
-        בדיקה האם התשובה מכילה מידע משמעותי
-        """
+        """Checks if the model’s response is long enough and not purely generic."""
         if not content or len(content.strip()) < 10:
             return False
-        
         content_lower = content.lower()
-        has_generic = any(generic in content_lower for generic in self.generic_responses)
-        
+        has_generic = any(g in content_lower for g in self.generic_responses)
         return not has_generic and len(content.strip()) > 20
-    
+
     def is_high_quality_response(self, content, metadata):
         """
-        בדיקה האם זו תשובה איכותית שצריכה לעצור את החיפוש
+        Combines multiple checks to determine if the response should end the pipeline:
+        - Must not be a “not found” message
+        - Must be meaningful
+        - Must be document-grounded
+        - Must not be vague
         """
         if not content or not metadata:
             return False
-        
-        # לא יכולה להיות תשובת "לא נמצא"
         if self.is_not_found_response(content):
             return False
-        
-        # חייבת להיות משמעותית
         if not self.is_meaningful_response(content):
             return False
-        
-        # חייבת להיות מבוססת על מסמכים
         if not self.has_document_based_content(content, metadata):
             return False
-        
-        # בדיקות איכות נוספות
         content_lower = content.lower()
-        has_vague_language = any(vague in content_lower for vague in self.vague_responses)
-        
-        # תשובה איכותית: יש תוכן מסמכים, משמעותית, לא מעורפלת, אורך מספיק
-        return not has_vague_language and len(content.strip()) > 80
-    
+        has_vague = any(v in content_lower for v in self.vague_responses)
+        return not has_vague and len(content.strip()) > 80
+
+    def get_failure_reason(self, content, metadata):
+        """
+        Returns a short reason explaining why a response failed the quality check.
+        Used for debug logs to improve traceability.
+        """
+        if not content:
+            return "empty"
+        if self.is_not_found_response(content):
+            return "not_found"
+        if not self.is_meaningful_response(content):
+            return "unmeaningful"
+        if not self.has_document_based_content(content, metadata):
+            return "no_documents"
+        content_lower = content.lower()
+        if any(v in content_lower for v in self.vague_responses):
+            return "vague"
+        return "unknown"
+
     def generate_no_documents_found_response(self, original_question, attempts_made):
         """
-        יצירת תשובה מובנית למקרה של "לא נמצאו מסמכים"
+        Builds a structured fallback response for cases where no relevant
+        documents were found across all search attempts.
         """
-        structured_response = {
+        return {
             "content": f"לא מצאתי מסמכים רלוונטיים לשאלה '{original_question}' במאגר הנתונים הנוכחי.",
             "metadata": {
                 "response_type": "no_documents_found",
@@ -281,37 +300,44 @@ class ResponseHandler:
                 "timestamp": str(int(round(datetime.now().timestamp())))
             }
         }
-        return structured_response
 
 
 def handle_run(record):
+    """
+    Main orchestration function that handles incoming chat requests.
+    Executes the full query lifecycle:
+    1. Preprocess question → generate variations.
+    2. Run model inference per variation.
+    3. Evaluate response quality.
+    4. Send best result to WebSocket.
+    """
+    # Extract basic request context
     user_id = record["userId"]
     user_groups = record["userGroups"]
     data = record["data"]
-    provider = data["provider"]
-    model_id = data["modelName"]
-    mode = data["mode"]
-    original_prompt = data["text"]
-    workspace_id = data.get("workspaceId", None)
-    session_id = data.get("sessionId")
-    images = data.get("images", [])
-    documents = data.get("documents", [])
-    videos = data.get("videos", [])
-    system_prompts = record.get("systemPrompts", {})
 
-    if not session_id:
-        session_id = str(uuid.uuid4())
+    provider = data["provider"]  # Model provider (bedrock, openai, etc.)
+    model_id = data["modelName"]  # Specific model identifier
+    mode = data["mode"]  # Generation mode (e.g., chat, completion)
+    original_prompt = data["text"]  # Original user question
+    workspace_id = data.get("workspaceId", None)  # Used for RAG mode
+    session_id = data.get("sessionId") or str(uuid.uuid4())  # Ensure session always has a UUID
+    images = data.get("images", [])  # Optional image inputs
+    documents = data.get("documents", [])  # Optional retrieved docs
+    videos = data.get("videos", [])  # Optional video inputs
+    system_prompts = record.get("systemPrompts", {})  # System-level context (instruction prompts)
 
-    # יצירת מעבדי השאלות והתשובות
+    # Initialize question and response handlers
     question_processor = QuestionProcessor()
     response_handler = ResponseHandler()
 
+    # Retrieve appropriate adapter for the model provider (e.g., BedrockAdapter)
     adapter = registry.get_adapter(f"{provider}.{model_id}")
 
-    adapter.on_llm_new_token = lambda *args, **kwargs: on_llm_new_token(
-        user_id, session_id, *args, **kwargs
-    )
+    # Connect the adapter’s streaming token callback to WebSocket sender
+    adapter.on_llm_new_token = lambda *args, **kwargs: on_llm_new_token(user_id, session_id, *args, **kwargs)
 
+    # Initialize the model instance with current context
     model = adapter(
         model_id=model_id,
         mode=mode,
@@ -320,21 +346,21 @@ def handle_run(record):
         model_kwargs=data.get("modelKwargs", {}),
     )
 
-    # יצירת Pipeline לעיבוד שאלות - מוגבל ל-2 נסיונות בלבד
+    # Variables for best response tracking
     best_response = None
     best_content = ""
     best_metadata = {}
-    
-    # יצירת וריאציות השאלה (מקסימום 2)
+
+    # Generate cleaned/refined question variations (max 2)
     search_variations = question_processor.generate_search_variations(original_prompt)
-    
     logger.info(f"Starting streamlined search with {len(search_variations)} attempts (max 2)")
-    
-    # ביצוע נסיונות חיפוש מוגבלים
+
+    # Iterate through variations sequentially
     for attempt_num, (variation_type, prompt_to_use) in enumerate(search_variations):
         try:
             logger.info(f"Attempt {attempt_num + 1}/{len(search_variations)} ({variation_type}): '{prompt_to_use}'")
-            
+
+            # Execute the model run for this variation
             response = model.run(
                 prompt=prompt_to_use,
                 workspace_id=workspace_id,
@@ -345,93 +371,82 @@ def handle_run(record):
                 system_prompts=system_prompts,
             )
 
-            logger.debug(f"Response from attempt {attempt_num + 1}: {response}")
-
-            # חילוץ תוכן ומטא-דאטה מהתשובה
+            # Normalize model output to unified dict format
             if isinstance(response, dict):
                 content = response.get("content", "")
                 metadata = response.get("metadata", {})
             else:
                 content = str(response)
                 metadata = {}
-            
-            # שמירת התשובה הראשונה כגיבוי
+
+            # Store the first response as a fallback baseline
             if best_response is None:
-                best_response = response
-                best_content = content
-                best_metadata = metadata
-            
-            # בדיקת איכות התשובה
+                best_response, best_content, best_metadata = response, content, metadata
+
+            # Evaluate response quality depending on RAG mode
             if workspace_id:
-                # עבור שאלות RAG - בדיקה קפדנית לתוכן מבוסס מסמכים
+                # For RAG-based queries → must be document-grounded and meaningful
                 if response_handler.is_high_quality_response(content, metadata):
                     logger.info(f"Found high-quality RAG response on attempt {attempt_num + 1}")
-                    best_response = response
-                    best_content = content
-                    best_metadata = metadata
+                    best_response, best_content, best_metadata = response, content, metadata
+                    break  # Stop pipeline early (good answer)
+                else:
+                    reason = response_handler.get_failure_reason(content, metadata)
+                    logger.info(f"Attempt {attempt_num + 1} failed reason: {reason}")
+            else:
+                # For normal chat mode → only need meaningful text
+                if response_handler.is_meaningful_response(content):
+                    logger.info(f"Got meaningful non-RAG response on attempt {attempt_num + 1}")
+                    best_response, best_content, best_metadata = response, content, metadata
                     break
                 else:
-                    # שמירת תשובה טובה יותר אם קיימת
-                    if response_handler.is_meaningful_response(content) and (not best_content or len(content) > len(best_content)):
-                        logger.info(f"Attempt {attempt_num + 1} - keeping as backup")
-                        best_response = response
-                        best_content = content
-                        best_metadata = metadata
-                    else:
-                        logger.info(f"Attempt {attempt_num + 1} returned insufficient results")
-            else:
-                # עבור שאלות רגילות - שימוש בתשובה משמעותית ראשונה
-                if response_handler.is_meaningful_response(content):
-                    logger.info(f"Got meaningful response on attempt {attempt_num + 1}")
-                    best_response = response
-                    best_content = content
-                    best_metadata = metadata
-                    break
-                
+                    reason = response_handler.get_failure_reason(content, metadata)
+                    logger.info(f"Attempt {attempt_num + 1} failed reason: {reason}")
+
         except Exception as e:
+            # Log any runtime error per attempt without halting the pipeline
             logger.error(f"Error on attempt {attempt_num + 1}: {str(e)}")
             continue
-    
-    # בדיקה אם לא נמצאו מסמכים רלוונטיים ויצירת תשובה מובנית
+
+    # Handle final fallback: if all attempts failed or “no docs found”
     if workspace_id and response_handler.is_not_found_response(best_content):
         logger.info("No relevant documents found, generating structured response")
-        structured_response = response_handler.generate_no_documents_found_response(
-            original_prompt, len(search_variations)
-        )
-        content = structured_response["content"]
-        metadata = structured_response["metadata"]
+        structured = response_handler.generate_no_documents_found_response(original_prompt, len(search_variations))
+        content, metadata = structured["content"], structured["metadata"]
     else:
-        content = best_content
-        metadata = best_metadata
-    
+        content, metadata = best_content, best_metadata
+
     logger.info(f"Final response selected. Content length: {len(content)}, Type: {metadata.get('response_type', 'standard')}")
-    
-    # שליחת התשובה הסופית
-    send_to_client(
-        {
+
+    # Send the final message to the user via WebSocket
+    send_to_client({
+        "type": "text",
+        "action": ChatbotAction.FINAL_RESPONSE.value,
+        "timestamp": str(int(round(datetime.now().timestamp()))),
+        "userId": user_id,
+        "userGroups": user_groups,
+        "data": {
+            "sessionId": session_id,
+            "content": content,
+            "metadata": metadata,
             "type": "text",
-            "action": ChatbotAction.FINAL_RESPONSE.value,
-            "timestamp": str(int(round(datetime.now().timestamp()))),
-            "userId": user_id,
-            "userGroups": user_groups,
-            "data": {
-                "sessionId": session_id,
-                "content": content,
-                "metadata": metadata,
-                "type": "text"
-            },
-        }
-    )
+        },
+    })
 
 
 @tracer.capture_method
 def record_handler(record: SQSRecord):
-    payload: str = record.body
-    message: dict = json.loads(payload)
-    detail: dict = json.loads(message["Message"])
-    logger.debug(detail)
-    logger.info("details", detail=detail)
+    """
+    Processes a single SQS record in the Lambda batch.
+    Determines the chatbot action and dispatches to the correct handler.
+    """
+    payload = record.body  # Raw SQS message body
+    message = json.loads(payload)  # Deserialize outer SNS wrapper
+    detail = json.loads(message["Message"])  # Deserialize inner event payload
 
+    logger.info("details", detail=detail)  # Log contextual info for debugging
+
+    # Dispatch action type
     if detail["action"] == ChatbotAction.RUN.value:
         handle_run(detail)
     elif detail["action"] == ChatbotAction.HEARTBEAT.value:
@@ -439,79 +454,68 @@ def record_handler(record: SQSRecord):
 
 
 def handle_failed_records(records):
-    for triplet in records:
-        status, error, record = triplet
-        payload: str = record.body
-        message: dict = json.loads(payload)
-        detail: dict = json.loads(message["Message"])
+    """
+    Sends error notifications via WebSocket for any failed SQS messages.
+    Provides user-friendly feedback based on common error patterns.
+    """
+    for status, error, record in records:
+        payload = record.body
+        message = json.loads(payload)
+        detail = json.loads(message["Message"])
         user_id = detail["userId"]
         data = detail.get("data", {})
         session_id = data.get("sessionId", "")
 
+        # Default generic error message
         message_text = "⚠️ *Something went wrong*"
-        if (
-            "An error occurred (ValidationException)" in error
-            and "The provided image must have dimensions in set [1280x720]" in error
-        ):
+
+        # Match specific validation errors for more precise user feedback
+        if "ValidationException" in error and "dimensions in set [1280x720]" in error:
             message_text = "⚠️ *The provided image must have dimensions of 1280x720.*"
-        elif (
-            "An error occurred (ValidationException)" in error
-            and "The width of the provided image must be within range [320, 4096]"
-            in error
-        ):
-            message_text = "⚠️ *The width of the provided image must be within range 320 and 4096 pixels.*"
-        elif (
-            "An error occurred (AccessDeniedException)" in error
-            and "You don't have access to the model with the specified model ID"
-            in error
-        ):
-            message_text = (
-                "*This model is not enabled. "
-                "Please try again later or contact "
-                "an administrator*"
-            )
+        elif "ValidationException" in error and "width of the provided image" in error:
+            message_text = "⚠️ *The width of the provided image must be between 320 and 4096 pixels.*"
+        elif "AccessDeniedException" in error and "model with the specified model ID" in error:
+            message_text = "*This model is not enabled. Please try again later or contact an administrator*"
         else:
             logger.error("Unable to process request", error=error)
 
-        send_to_client(
-            {
-                "type": "text",
-                "action": "error",
-                "direction": "OUT",
-                "userId": user_id,
-                "timestamp": str(int(round(datetime.now().timestamp()))),
-                "data": {
-                    "sessionId": session_id,
-                    "content": message_text,
-                    "type": "text",
-                },
-            }
-        )
+        # Send structured error response to the user
+        send_to_client({
+            "type": "text",
+            "action": "error",
+            "direction": "OUT",
+            "userId": user_id,
+            "timestamp": str(int(round(datetime.now().timestamp()))),
+            "data": {"sessionId": session_id, "content": message_text, "type": "text"},
+        })
 
 
 @logger.inject_lambda_context(log_event=False)
 @tracer.capture_lambda_handler
 def handler(event, context: LambdaContext):
-    batch = event["Records"]
+    """
+    Main AWS Lambda entrypoint for SQS-triggered RAG chatbot requests.
+    Handles batching, secrets retrieval, and error reporting.
+    """
+    batch = event["Records"]  # List of SQS messages in the batch
 
+    # Load API keys or model credentials from Secrets Manager
     api_keys = parameters.get_secret(API_KEYS_SECRETS_ARN, transform="json")
-    for key in api_keys:
-        os.environ[key] = api_keys[key]
+    for key, value in api_keys.items():
+        os.environ[key] = value  # Inject secrets into environment for adapters
 
     try:
+        # Process batch using the configured SQS processor
         with processor(records=batch, handler=record_handler):
             processed_messages = processor.process()
     except BatchProcessingError as e:
         logger.error(e)
 
+    # Log result summary for all processed messages
     for message in processed_messages:
-        logger.info(
-            "Request complete with status " + message[0],
-            status=message[0],
-            cause=message[1],
-        )
-    handle_failed_records(
-        message for message in processed_messages if message[0] == "fail"
-    )
+        logger.info("Request complete with status " + message[0], status=message[0], cause=message[1])
 
-    return processor.response()
+    # Notify users about failed message deliveries
+    handle_failed_records(msg for msg in processed_messages if msg[0] == "fail")
+
+    return processor.response()  # Return batch result summary to AWS Lambda
